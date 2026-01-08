@@ -1,0 +1,11 @@
+# Point Cloud Human Tracking Exercise - Dependencies
+
+# Core libraries
+open3d>=0.17.0
+numpy>=1.24.0
+scipy>=1.10.0
+scikit-learn>=1.3.0
+matplotlib>=3.7.0
+
+# Optional but recommended
+pandas>=2.0.0
