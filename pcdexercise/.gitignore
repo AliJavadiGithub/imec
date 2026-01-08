@@ -1,3 +1,4 @@
 mapAll/
 mapHumanOnly/
 *.mp4
+.venv/

@@ -1,19 +1,23 @@
+#!/usr/bin/env python3
+# ============================================================
+# OC-SORT–style 3D Human Tracker for Point Clouds
+# Input/Output behavior preserved from original script
+# ============================================================
+
 import json
 import os
 import glob
+import bisect
 import numpy as np
 import open3d as o3d
-from scipy.spatial.distance import cdist, cosine
-from scipy.optimize import linear_sum_assignment
-from filterpy.kalman import KalmanFilter
 from collections import defaultdict
+from scipy.optimize import linear_sum_assignment
+from scipy.spatial.distance import cdist
+from filterpy.kalman import KalmanFilter
 import matplotlib.pyplot as plt
 from mpl_toolkits.mplot3d import Axes3D
-import torch
-import torch.nn as nn
-import bisect
 
-# --- Constants ---
+# -------------------- Constants --------------------
 MIN_POINTS_PER_FILE = 2
 MIN_POINTS_CLUSTER = 5
 EPS_CLUSTER = 1.0
@@ -21,261 +25,276 @@ MIN_HEIGHT = -0.5
 MAX_HEIGHT = 1.5
 MAX_SPEED = 5.0
 
-# --- DeepSort-inspired Appearance Feature Extractor ---
-class PointCloudDescriptor(nn.Module):
-    def __init__(self, input_dim=3, hidden_dim=64, output_dim=32):
-        super().__init__()
-        self.fc1 = nn.Linear(input_dim, hidden_dim)
-        self.fc2 = nn.Linear(hidden_dim, hidden_dim)
-        self.fc3 = nn.Linear(hidden_dim, output_dim)
-        self.relu = nn.ReLU()
+MAX_MISSED_FRAMES = 8
+CHI2_GATE = 9.21   # ~95% for 3 DoF
+FRAME_RATE_HZ = 30.0
 
-    def forward(self, x):
-        x = self.relu(self.fc1(x))
-        x = self.relu(self.fc2(x))
-        return self.fc3(x)
+# -------------------- Kalman Filter --------------------
+def init_kalman_filter(centroid):
+    kf = KalmanFilter(dim_x=6, dim_z=3)
+    kf.x = np.hstack([centroid, [0, 0, 0]])
 
-# --- Human Tracker with DeepSort-inspired Re-ID ---
-class HumanTrackerDeepSort:
-    def __init__(self, max_missed_frames=5, feature_dim=32):
-        self.tracks = defaultdict(lambda: {
-            "centroids": [],
-            "timestamps": [],
-            "missed_frames": 0,
-            "features": []
-        })
+    kf.F = np.eye(6)
+    kf.H = np.zeros((3, 6))
+    kf.H[:3, :3] = np.eye(3)
+
+    kf.P *= 100.0
+    kf.R = np.eye(3) * 0.05
+    kf.Q = np.eye(6) * 0.01
+    return kf
+
+def update_F(kf, dt):
+    kf.F = np.array([
+        [1,0,0,dt,0,0],
+        [0,1,0,0,dt,0],
+        [0,0,1,0,0,dt],
+        [0,0,0,1,0,0],
+        [0,0,0,0,1,0],
+        [0,0,0,0,0,1],
+    ])
+
+# -------------------- Track Class --------------------
+class Track:
+    def __init__(self, tid, centroid, timestamp):
+        self.id = tid
+        self.kf = init_kalman_filter(centroid)
+        self.centroids = [centroid]
+        self.timestamps = [timestamp]
+        self.missed = 0
+        self.last_timestamp = timestamp
+
+    def predict(self, timestamp):
+        dt = max((timestamp - self.last_timestamp) / 1000.0, 1e-3)
+        update_F(self.kf, dt)
+        self.kf.predict()
+        self.last_timestamp = timestamp
+        return self.kf.x[:3]
+
+    def update(self, centroid, timestamp):
+        self.kf.update(centroid)
+        self.centroids.append(centroid)
+        self.timestamps.append(timestamp)
+        self.missed = 0
+        self.last_timestamp = timestamp
+
+    def mark_missed(self, timestamp):
+        self.centroids.append(self.kf.x[:3].copy())
+        self.timestamps.append(timestamp)
+        self.missed += 1
+        self.last_timestamp = timestamp
+
+# -------------------- OC-SORT Tracker --------------------
+class OCSORT3D:
+    def __init__(self):
+        self.tracks = {}
         self.next_id = 0
-        self.max_missed_frames = max_missed_frames
-        self.kalman_filters = {}
-        self.feature_extractor = PointCloudDescriptor(output_dim=feature_dim)
-        self.processed_timestamps = []
+        self.all_timestamps = []
 
-    def extract_features(self, cluster):
-        points = np.asarray(cluster.points)
-        if len(points) == 0:
-            return np.zeros(32)
-        points = (points - np.mean(points, axis=0)) / (np.std(points, axis=0) + 1e-6)
-        points_tensor = torch.FloatTensor(points)
-        with torch.no_grad():
-            features = self.feature_extractor(points_tensor).mean(dim=0).numpy()
-        return features
-
+    # ---------- Point Cloud Processing ----------
     def filter_human_points(self, pcd):
-        points = np.asarray(pcd.points)
-        human_points_idx = np.where((points[:, 2] > MIN_HEIGHT) & (points[:, 2] < MAX_HEIGHT))[0]
-        return pcd.select_by_index(human_points_idx)
+        pts = np.asarray(pcd.points)
+        idx = np.where((pts[:,2] > MIN_HEIGHT) & (pts[:,2] < MAX_HEIGHT))[0]
+        return pcd.select_by_index(idx)
 
     def cluster_humans(self, pcd):
-        if len(np.asarray(pcd.points)) < MIN_POINTS_CLUSTER:
+        if len(pcd.points) < MIN_POINTS_CLUSTER:
             return []
-        try:
-            labels = np.array(pcd.cluster_dbscan(EPS_CLUSTER, MIN_POINTS_CLUSTER))
-            clusters = [pcd.select_by_index(np.where(labels == lab)[0]) for lab in np.unique(labels) if lab != -1]
-            return clusters
-        except:
-            return []
+        labels = np.array(pcd.cluster_dbscan(EPS_CLUSTER, MIN_POINTS_CLUSTER))
+        clusters = []
+        for lab in np.unique(labels):
+            if lab == -1:
+                continue
+            clusters.append(pcd.select_by_index(np.where(labels == lab)[0]))
+        return clusters
 
-    def get_centroid(self, cluster):
-        points = np.asarray(cluster.points)
-        return np.mean(points, axis=0) if len(points) > 0 else np.zeros(3)
+    def centroid(self, cluster):
+        return np.mean(np.asarray(cluster.points), axis=0)
 
-    def init_kalman_filter(self, centroid):
-        kf = KalmanFilter(dim_x=6, dim_z=3)
-        kf.x = np.concatenate([centroid, [0, 0, 0]])
-        kf.F = np.array([
-            [1,0,0,1,0,0],
-            [0,1,0,0,1,0],
-            [0,0,1,0,0,1],
-            [0,0,0,1,0,0],
-            [0,0,0,0,1,0],
-            [0,0,0,0,0,1]
-        ])
-        kf.H = np.eye(3,6)
-        kf.P *= 1000
-        kf.R = np.eye(3)*0.1
-        kf.Q = np.eye(6)*0.01
-        return kf
+    # ---------- Association ----------
+    def associate(self, detections, timestamp):
+        if not self.tracks:
+            return [], list(range(len(detections))), []
 
-    def interpolate_missing_frames(self):
-        if not self.processed_timestamps:
-            return
-        all_ts = sorted(set(self.processed_timestamps))
-        for tid, track in self.tracks.items():
-            timestamps = track["timestamps"]
-            missing_ts = sorted(set(all_ts) - set(timestamps))
-            for ts in missing_ts:
-                prev_ts = max([t for t in timestamps if t < ts], default=None)
-                next_ts = min([t for t in timestamps if t > ts], default=None)
-                if prev_ts is None or next_ts is None:
-                    continue
-                prev_idx = timestamps.index(prev_ts)
-                next_idx = timestamps.index(next_ts)
-                dt = (ts - prev_ts)/1000
-                if tid in self.kalman_filters:
-                    kf = self.kalman_filters[tid]
-                    steps = int(dt*30)
-                    for _ in range(steps):
-                        kf.predict()
-                    pred = kf.x[:3]
-                    insert = bisect.bisect_left(timestamps, ts)
-                    track["centroids"].insert(insert, pred)
-                    track["timestamps"].insert(insert, ts)
-                    alpha = (ts-prev_ts)/(next_ts-prev_ts)
-                    fprev = np.array(track["features"][prev_idx])
-                    fnext = np.array(track["features"][next_idx])
-                    track["features"].insert(insert, (1-alpha)*fprev + alpha*fnext)
-
-    def associate_detections_deepsort(self, tracks, detections, features, max_distance=0.5, max_cosine_dist=0.4):
-        if not tracks or not detections:
-            return []
-        track_centroids = np.array([track["centroids"][-1] for track in tracks.values()])
-        motion_cost = cdist(track_centroids, detections, metric="euclidean")
-        track_features = np.array([track["features"][-1] for track in tracks.values()])
-        appearance_cost = cdist(track_features, features, metric=cosine)
-        combined_cost = 0.5*motion_cost + 0.5*appearance_cost
-        row_ind, col_ind = linear_sum_assignment(combined_cost)
-        assignments = []
-        for r, c in zip(row_ind, col_ind):
-            if combined_cost[r, c] < max_distance + max_cosine_dist:
-                assignments.append((list(tracks.keys())[r], c))
-        return assignments
-
-    def update_tracks(self, clusters, timestamp):
-        self.processed_timestamps.append(timestamp)
-        detections = []
-        features = []
-        for cluster in clusters:
-            detections.append(self.get_centroid(cluster))
-            features.append(self.extract_features(cluster))
         track_ids = list(self.tracks.keys())
-        assignments = self.associate_detections_deepsort(self.tracks, detections, features)
+        preds = []
+        covs = []
 
-        matched = []
-        for tid, det_idx in assignments:
-            c = detections[det_idx]
-            f = features[det_idx]
-            t = self.tracks[tid]
-            t["centroids"].append(c)
-            t["timestamps"].append(timestamp)
-            t["features"].append(f)
-            t["missed_frames"] = 0
-            if tid not in self.kalman_filters:
-                self.kalman_filters[tid] = self.init_kalman_filter(c)
-            self.kalman_filters[tid].predict()
-            self.kalman_filters[tid].update(c)
-            matched.append(tid)
+        for tid in track_ids:
+            pred = self.tracks[tid].predict(timestamp)
+            preds.append(pred)
+            covs.append(self.tracks[tid].kf.P[:3,:3])
 
-        unmatched_dets = [i for i in range(len(detections)) if i not in [d for (_, d) in assignments]]
+        preds = np.array(preds)
+        dets = np.array(detections)
+
+        cost = np.zeros((len(preds), len(dets)))
+        gating = np.full(cost.shape, False)
+
+        for i in range(len(preds)):
+            for j in range(len(dets)):
+                diff = dets[j] - preds[i]
+                maha = diff.T @ np.linalg.inv(covs[i]) @ diff
+                cost[i,j] = maha
+                if maha < CHI2_GATE:
+                    gating[i,j] = True
+                else:
+                    cost[i,j] = 1e6
+
+        row_ind, col_ind = linear_sum_assignment(cost)
+
+        matches, unmatched_tracks, unmatched_dets = [], [], []
+        matched_tracks = set()
+        matched_dets = set()
+
+        for r, c in zip(row_ind, col_ind):
+            if gating[r,c]:
+                matches.append((track_ids[r], c))
+                matched_tracks.add(track_ids[r])
+                matched_dets.add(c)
+
+        for tid in track_ids:
+            if tid not in matched_tracks:
+                unmatched_tracks.append(tid)
+
+        for i in range(len(detections)):
+            if i not in matched_dets:
+                unmatched_dets.append(i)
+
+        return matches, unmatched_dets, unmatched_tracks
+
+    # ---------- Update ----------
+    def update(self, clusters, timestamp):
+        self.all_timestamps.append(timestamp)
+        detections = [self.centroid(c) for c in clusters]
+
+        matches, unmatched_dets, unmatched_tracks = self.associate(detections, timestamp)
+
+        for tid, det_idx in matches:
+            self.tracks[tid].update(detections[det_idx], timestamp)
+
         for det_idx in unmatched_dets:
-            c = detections[det_idx]
-            f = features[det_idx]
-            self.tracks[self.next_id] = {
-                "centroids":[c],
-                "timestamps":[timestamp],
-                "features":[f],
-                "missed_frames":0
-            }
-            self.kalman_filters[self.next_id] = self.init_kalman_filter(c)
+            self.tracks[self.next_id] = Track(self.next_id, detections[det_idx], timestamp)
             self.next_id += 1
 
-        unmatched_tracks = [tid for tid in track_ids if tid not in matched]
         for tid in unmatched_tracks:
-            t = self.tracks[tid]
-            t["missed_frames"] += 1
-            if t["missed_frames"] > self.max_missed_frames:
+            tr = self.tracks[tid]
+            tr.mark_missed(timestamp)
+            if tr.missed > MAX_MISSED_FRAMES:
                 del self.tracks[tid]
-                del self.kalman_filters[tid]
-            else:
-                pred = self.kalman_filters[tid].x[:3]
-                t["centroids"].append(pred)
-                t["timestamps"].append(timestamp)
-                t["features"].append(t["features"][-1])
 
+    # ---------- Interpolation ----------
+    def interpolate_missing(self):
+        all_ts = sorted(set(self.all_timestamps))
+        for tr in self.tracks.values():
+            ts = tr.timestamps
+            cs = tr.centroids
+            full_c, full_t = [], []
+            for t in all_ts:
+                if t in ts:
+                    idx = ts.index(t)
+                    full_c.append(cs[idx])
+                    full_t.append(t)
+                else:
+                    i = bisect.bisect_left(ts, t)
+                    if i == 0 or i == len(ts):
+                        continue
+                    t0, t1 = ts[i-1], ts[i]
+                    c0, c1 = cs[i-1], cs[i]
+                    alpha = (t - t0) / (t1 - t0)
+                    full_c.append((1-alpha)*c0 + alpha*c1)
+                    full_t.append(t)
+            tr.centroids = full_c
+            tr.timestamps = full_t
+
+# -------------------- Utilities --------------------
 def load_and_check_pcd(path):
     pcd = o3d.io.read_point_cloud(path)
     if not pcd.has_points() or len(pcd.points) < MIN_POINTS_PER_FILE:
         return None, None
-    timestamp = int(os.path.basename(path).split("_")[1].split("ms")[0])
-    return pcd, timestamp
+    ts = int(os.path.basename(path).split("_")[1].split("ms")[0])
+    return pcd, ts
 
 def visualize_tracks(tracks, env=None):
-    if not tracks: return
+    if not tracks:
+        return
     fig = plt.figure(figsize=(10,7))
     ax = fig.add_subplot(111, projection="3d")
+
     if env:
         for pcd in env:
             pts = np.asarray(pcd.points)
-            ax.scatter(pts[:,0], pts[:,1], pts[:,2], c='gray', s=1, alpha=0.3)
-    for tid, t in tracks.items():
-        c = np.array(t["centroids"])
-        if len(c)>1: ax.plot(c[:,0],c[:,1],c[:,2], label=f"ID {tid}", linewidth=2)
+            ax.scatter(pts[:,0], pts[:,1], pts[:,2], c="gray", s=1, alpha=0.3)
+
+    for tid, tr in tracks.items():
+        c = np.array(tr.centroids)
+        if len(c) > 1:
+            ax.plot(c[:,0], c[:,1], c[:,2], linewidth=2, label=f"ID {tid}")
+
     ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
-    ax.legend(); plt.show()
+    ax.legend()
+    plt.show()
 
-# --- Modified Speed Plot with Smoothing ---
 def plot_velocity(tracks, smoothing_window=5):
-    if not tracks:
-        print("No tracks to plot velocity.")
-        return
-
     plt.figure(figsize=(10,5))
-    for track_id, track in tracks.items():
-        centroids = np.array(track["centroids"])
-        timestamps = np.array(track["timestamps"])
-        if len(centroids)<2: continue
-        order = np.argsort(timestamps)
-        centroids = centroids[order]
-        timestamps = timestamps[order]
+    for tid, tr in tracks.items():
+        c = np.array(tr.centroids)
+        t = np.array(tr.timestamps)
+        if len(c) < 2:
+            continue
+        order = np.argsort(t)
+        c = c[order]
+        t = t[order]
 
         speeds = []
-        for i in range(len(timestamps)-1):
-            dt = timestamps[i+1] - timestamps[i]
-            if dt <= 0:
-                dt += 110000
-            dist = np.linalg.norm(centroids[i+1]-centroids[i])
-            speeds.append(min(dist/(dt/1000), MAX_SPEED))
+        for i in range(len(t)-1):
+            dt = max((t[i+1]-t[i])/1000.0, 1e-3)
+            speeds.append(min(np.linalg.norm(c[i+1]-c[i])/dt, MAX_SPEED))
 
-        speeds = np.array(speeds)
-        ts = timestamps[1:]
-
-        # --- Smoothing ---
         if len(speeds) >= smoothing_window:
             kernel = np.ones(smoothing_window)/smoothing_window
-            smoothed = np.convolve(speeds, kernel, mode='same')
-        else:
-            smoothed = speeds
+            speeds = np.convolve(speeds, kernel, mode="same")
 
-        plt.plot(ts, smoothed, label=f"ID {track_id} (smoothed)")
+        plt.plot(t[1:], speeds, label=f"ID {tid}")
 
     plt.xlabel("Time (ms)")
     plt.ylabel("Speed (m/s)")
-    plt.title("Smoothed Human Speed Over Time")
     plt.ylim(0, MAX_SPEED+1)
     plt.legend()
     plt.show()
 
+# -------------------- Main --------------------
 def main():
-    tracker = HumanTrackerDeepSort()
+    tracker = OCSORT3D()
     paths = sorted(glob.glob("mapAll/*.pcd"))
     env = []
     tracking_data = []
 
     for idx, path in enumerate(paths):
         pcd, ts = load_and_check_pcd(path)
-        if pcd is None: continue
+        if pcd is None:
+            continue
+
         human = tracker.filter_human_points(pcd)
         env.append(pcd)
         clusters = tracker.cluster_humans(human)
+
         if clusters:
-            tracker.update_tracks(clusters, ts)
+            tracker.update(clusters, ts)
             dets = []
             for cl in clusters:
-                dets.append({"position":tracker.get_centroid(cl).tolist(),"status":"MOVING"})
-            tracking_data.append({"frame_id":idx,"timestamp":ts,"detections":dets})
+                dets.append({
+                    "position": tracker.centroid(cl).tolist(),
+                    "status": "MOVING"
+                })
+            tracking_data.append({
+                "frame_id": idx,
+                "timestamp": ts,
+                "detections": dets
+            })
 
-    tracker.interpolate_missing_frames()
+    tracker.interpolate_missing()
 
-    with open("tracking_results.json","w") as f:
+    with open("tracking_results.json", "w") as f:
         json.dump(tracking_data, f, indent=4)
 
     visualize_tracks(tracker.tracks, env)
