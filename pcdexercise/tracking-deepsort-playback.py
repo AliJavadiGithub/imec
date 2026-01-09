@@ -15,7 +15,7 @@ def extract_timestamp(filename):
 def main():
     current_dir = os.path.dirname(os.path.abspath(__file__))
     map_dir = os.path.join(current_dir, "mapAll")
-    json_path = os.path.join(current_dir, "tracking_results.json")
+    json_path = os.path.join(current_dir, "tracking_output.json")
     video_output = "tracking_playback.mp4"
 
     # ۱. بارگذاری داده‌های تراکینگ
