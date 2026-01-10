@@ -12,7 +12,6 @@ o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
 class Track:
     def __init__(self, id, centroid, shape_feature):
         self.id = id
-        # x = [x, y, z, vx, vy, vz]
         self.kf = self.init_kalman(centroid)
         self.shape_history = [shape_feature]
         self.hits = 1           
@@ -29,7 +28,7 @@ class Track:
                          [0, 0, 1, 0, 0, 0]])
         kf.x[:3] = pos.reshape(3, 1)
         kf.P *= 5.0 
-        kf.R *= 12.0 # High R trust the prediction over the jittery DBSCAN center
+        kf.R *= 10.0 # Trust prediction slightly more due to sparse jitter
         kf.Q = np.eye(6) * 0.01 
         return kf
 
@@ -43,64 +42,64 @@ class HumanTrackerMOT:
         self.lost_tracks = [] 
         self.history = []
         
-        # Hyperparameters for Stability
-        self.min_hits = 5           # ID must be seen 5 times to be confirmed
-        self.max_skip_dynamic = 30  # Increased for better occlusion handling
-        self.max_skip_static = 70   
-        self.dist_weight = 0.85     # Emphasis on spatial proximity
-        self.shape_weight = 0.15    # Emphasis on consistent human shape
-        self.gating_threshold = 1.0 # Max meters person can move between frames
+        # Hyperparameters
+        self.min_hits = 3           # Reduced slightly for sparse data
+        self.max_skip_dynamic = 20  
+        self.max_skip_static = 50   
+        self.dist_weight = 0.80     
+        self.shape_weight = 0.20    
+        self.gating_threshold = 1.2 # Max meters between frames
 
     def extract_shape_descriptor(self, cluster):
-        """
-        Mimics PointNet's Global Feature extraction.
-        Calculates normalized spatial moments and height-based density.
-        """
         pts = np.asarray(cluster.points)
         if len(pts) < 5: return np.zeros(4)
-        
-        # Normalize points to centroid
         centered_pts = pts - np.mean(pts, axis=0)
-        
-        # 1. Aspect Ratio (Verticality)
         bbox = cluster.get_axis_aligned_bounding_box()
         ext = bbox.get_extent()
         aspect_ratio = ext[2] / (max(ext[0], ext[1]) + 1e-6)
-        
-        # 2. Point Density Distribution (Head vs Body)
-        # Check percentage of points in the top 30% of the height
         height_threshold = np.min(pts[:,2]) + 0.7 * ext[2]
         head_density = np.sum(pts[:,2] > height_threshold) / len(pts)
-        
-        # 3. Variance across axes
         variance = np.var(centered_pts, axis=0)
-        
         return np.array([aspect_ratio, head_density, variance[0], variance[2]])
 
-    def is_valid_human(self, cluster):
+    def is_valid_human_geometry(self, cluster):
+        """Refined heuristic based on your bounds [6.0, 6.5, 1.75]"""
         bbox = cluster.get_axis_aligned_bounding_box()
-        ext = bbox.get_extent()
+        ext = bbox.get_extent() # [width, length, height]
         pts_count = len(cluster.points)
-        # Filter: Height 0.4-2.0m, Width 0.2-1.0m, Min Points 10
-        return (0.4 < ext[2] < 2.0) and (0.15 < max(ext[0], ext[1]) < 0.9) and (pts_count > 10)
+        
+        # Human dimensions in meters: 
+        # Width/Length usually < 0.8m, Height between 0.8m and 2.1m
+        is_human_sized = (0.7 < ext[2] < 2.1) and (max(ext[0], ext[1]) < 1.0)
+        return is_human_sized and (pts_count >= 5)
 
     def update(self, frame_id, timestamp, pcd_file_path):
         detections = []
         if os.path.exists(pcd_file_path):
             pcd = o3d.io.read_point_cloud(pcd_file_path)
             if not pcd.is_empty():
-                pcd = pcd.voxel_down_sample(voxel_size=0.04) # Uniform density
+                # --- GEOMETRIC IMPROVEMENT START ---
+                # 1. Clean noise
                 pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=1.5)
                 
-                labels = np.array(pcd.cluster_dbscan(eps=0.55, min_points=8)) # Optimized EPS
+                # 2. Ground Plane Subtraction
+                # This prevents the tracker from 'tripping' on floor points
+                plane_model, inliers = pcd.segment_plane(distance_threshold=0.15,
+                                                         ransac_n=3,
+                                                         num_iterations=1000)
+                objects_pcd = pcd.select_by_index(inliers, invert=True)
+
+                # 3. Enhanced Clustering
+                labels = np.array(objects_pcd.cluster_dbscan(eps=0.5, min_points=5))
                 for label in np.unique(labels[labels >= 0]):
                     indices = np.where(labels == label)[0]
-                    cluster = pcd.select_by_index(indices)
-                    if self.is_valid_human(cluster):
+                    cluster = objects_pcd.select_by_index(indices)
+                    if self.is_valid_human_geometry(cluster):
                         detections.append({
                             'centroid': cluster.get_center(), 
                             'shape': self.extract_shape_descriptor(cluster)
                         })
+                # --- GEOMETRIC IMPROVEMENT END ---
 
         # Predict
         prev_ts = self.history[-1]['timestamp_ms'] if self.history else timestamp - 33
@@ -110,14 +109,13 @@ class HumanTrackerMOT:
             t.kf.predict()
             t.age += 1
 
-        # Association
+        # Association (Hungarian Algorithm)
         assigned_tracks, assigned_dets = set(), set()
         if self.tracks and detections:
             cost_matrix = np.zeros((len(self.tracks), len(detections)))
             for i, track in enumerate(self.tracks):
                 for j, det in enumerate(detections):
                     dist = np.linalg.norm(track.kf.x[:3].flatten() - det['centroid'])
-                    # Compare current shape to average historical shape
                     shape_dist = np.linalg.norm(track.get_avg_shape() - det['shape'])
                     
                     if dist > self.gating_threshold:
@@ -152,7 +150,6 @@ class HumanTrackerMOT:
             if j not in assigned_dets:
                 found_reid = False
                 for lt in self.lost_tracks:
-                    # Spatial + Shape Re-ID check
                     if np.linalg.norm(lt.last_seen_pos - det['centroid']) < 1.5:
                         lt.kf.x[:3] = det['centroid'].reshape(3, 1)
                         lt.skipped_frames = 0
@@ -164,7 +161,7 @@ class HumanTrackerMOT:
                     self.tracks.append(Track(self.next_id, det['centroid'], det['shape']))
                     self.next_id += 1
 
-        # Logging
+        # Logging Results
         curr_res = []
         for t in self.tracks:
             if t.skipped_frames == 0 and t.hits >= self.min_hits:
@@ -179,13 +176,13 @@ class HumanTrackerMOT:
         self.history.append({"frame_id": frame_id, "timestamp_ms": timestamp, "detections": curr_res})
 
     def finalize_results(self, json_name="tracking_results.json"):
-        # Post-filter: Remove tracks that appear in fewer than 40 frames total
+        # Reduced count threshold for shorter PCD sequences
         id_counts = {}
         for frame in self.history:
             for det in frame['detections']:
                 id_counts[det['id']] = id_counts.get(det['id'], 0) + 1
         
-        valid_ids = [idx for idx, count in id_counts.items() if count > 40]
+        valid_ids = [idx for idx, count in id_counts.items() if count > 10]
         final_history = []
         for frame in self.history:
             clean_dets = [d for d in frame['detections'] if d['id'] in valid_ids]
@@ -195,7 +192,7 @@ class HumanTrackerMOT:
         
         with open(json_name, 'w') as f:
             json.dump(final_history, f, indent=4)
-        print(f"✅ Enhanced Tracking Finished. Results in {json_name}")
+        print(f"✅ Tracking Finished. Results in {json_name}")
 
 def main():
     tracker = HumanTrackerMOT()
@@ -203,11 +200,10 @@ def main():
     files = sorted([f for f in os.listdir(data_path) if f.endswith('.pcd')],
                    key=lambda x: int(re.search(r'(\d+)ms', x).group(1)))
 
-    print(f"Processing {len(files)} frames with Shape-Aware Tracking...")
     for i, filename in enumerate(files):
         ts = int(re.search(r'(\d+)ms', filename).group(1))
         tracker.update(i, ts, os.path.join(data_path, filename))
-        if i % 100 == 0: print(f"Frame {i}/{len(files)}")
+        if i % 50 == 0: print(f"Processing Frame {i}/{len(files)}")
 
     tracker.finalize_results()
 
