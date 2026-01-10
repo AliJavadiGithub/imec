@@ -3,6 +3,7 @@ import re
 import json
 import numpy as np
 import open3d as o3d
+import cv2
 from scipy.optimize import linear_sum_assignment
 from filterpy.kalman import KalmanFilter
 
@@ -10,15 +11,11 @@ from filterpy.kalman import KalmanFilter
 o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
 
 class Track:
-    def __init__(self, id, centroid, shape_feature):
+    def __init__(self, id, centroid):
         self.id = id
         self.kf = self.init_kalman(centroid)
-        self.shape_history = [shape_feature]
-        self.hits = 1           
-        self.age = 1            
         self.skipped_frames = 0 
-        self.is_static = False
-        self.last_seen_pos = centroid
+        self.hits = 1
 
     def init_kalman(self, pos):
         kf = KalmanFilter(dim_x=6, dim_z=3)
@@ -32,34 +29,36 @@ class Track:
         kf.Q = np.eye(6) * 0.01 
         return kf
 
-    def get_avg_shape(self):
-        return np.mean(self.shape_history[-15:], axis=0)
-
 class VisualTrackingSystem:
-    def __init__(self):
+    def __init__(self, output_video="tracking_output.mp4", fps=20):
         self.tracks = []
         self.next_id = 1
-        self.lost_tracks = []
         self.gating_threshold = 1.2
         
-        # Initialize Visualizer
+        # Open3D Visualizer Setup
+        self.width, self.height = 1280, 720
         self.vis = o3d.visualization.Visualizer()
-        self.vis.create_window(window_name="Human Tracking MOT", width=1280, height=720)
+        self.vis.create_window(window_name="Recording...", width=self.width, height=self.height, visible=True)
+        
+        # Video Writer Setup
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        self.video_writer = cv2.VideoWriter(output_video, fourcc, fps, (self.width, self.height))
+        
         self.first_frame = True
 
-    def update_and_render(self, pcd_path, frame_id):
+    def update_and_record(self, pcd_path, frame_id):
         if not os.path.exists(pcd_path): return
         
         pcd = o3d.io.read_point_cloud(pcd_path)
-        original_pcd = o3d.geometry.PointCloud(pcd) # Copy for background
-        original_pcd.paint_uniform_color([0.2, 0.2, 0.2])
+        original_pcd = o3d.geometry.PointCloud(pcd)
+        original_pcd.paint_uniform_color([0.15, 0.15, 0.15]) # Dark background
         
-        # 1. Geometric Extraction (The "Robust Workflow")
+        # 1. Geometric Extraction
         pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=1.5)
         plane_model, inliers = pcd.segment_plane(distance_threshold=0.15, ransac_n=3, num_iterations=1000)
         objects_pcd = pcd.select_by_index(inliers, invert=True)
         
-        # 2. DBSCAN + Dimension Filtering
+        # 2. Clustering & Detection
         labels = np.array(objects_pcd.cluster_dbscan(eps=0.5, min_points=5))
         detections = []
         for label in np.unique(labels[labels >= 0]):
@@ -67,71 +66,81 @@ class VisualTrackingSystem:
             bbox = cluster.get_axis_aligned_bounding_box()
             ext = bbox.get_extent()
             
-            # Filter: Height 0.7-2.1m, Width < 1.0m
             if (0.7 < ext[2] < 2.1) and (max(ext[0], ext[1]) < 1.0):
                 detections.append({'centroid': cluster.get_center(), 'cluster': cluster})
 
-        # 3. Simple Association (Distance-based)
-        assigned_tracks = set()
+        # 3. Association & Rendering Prep
         geometries = [original_pcd]
+        assigned_dets = set()
         
-        if self.tracks and detections:
-            # For visualization, we'll use a simplified association
-            for i, track in enumerate(self.tracks):
-                best_dist = self.gating_threshold
-                best_det_idx = -1
-                for j, det in enumerate(detections):
-                    dist = np.linalg.norm(track.kf.x[:3].flatten() - det['centroid'])
-                    if dist < best_dist:
-                        best_dist = dist
-                        best_det_idx = j
+        for track in self.tracks:
+            best_dist = self.gating_threshold
+            best_det_idx = -1
+            for j, det in enumerate(detections):
+                if j in assigned_dets: continue
+                dist = np.linalg.norm(track.kf.x[:3].flatten() - det['centroid'])
+                if dist < best_dist:
+                    best_dist = dist
+                    best_det_idx = j
+            
+            if best_det_idx != -1:
+                track.kf.update(detections[best_det_idx]['centroid'])
+                track.skipped_frames = 0
+                track.hits += 1
+                assigned_dets.add(best_det_idx)
                 
-                if best_det_idx != -1:
-                    track.kf.update(detections[best_det_idx]['centroid'])
-                    track.skipped_frames = 0
-                    assigned_tracks.add(i)
-                    
-                    # Add Bounding Box + Color Points
-                    cluster = detections[best_det_idx]['cluster']
-                    cluster.paint_uniform_color([1, 0, 0])
-                    bbox = cluster.get_axis_aligned_bounding_box()
-                    bbox.color = (0, 1, 0)
-                    geometries.append(cluster)
-                    geometries.append(bbox)
-                    print(f"Frame {frame_id}: Tracking ID {track.id}")
+                # Add visuals for active tracks
+                cluster = detections[best_det_idx]['cluster']
+                cluster.paint_uniform_color([1, 0, 0])
+                bbox = cluster.get_axis_aligned_bounding_box()
+                bbox.color = (0, 1, 0)
+                geometries.extend([cluster, bbox])
 
-        # 4. Handle New Tracks
+        # 4. New Track Logic
         for j, det in enumerate(detections):
-            # If not close to any existing track, create new
-            is_new = True
-            for t in self.tracks:
-                if np.linalg.norm(t.kf.x[:3].flatten() - det['centroid']) < self.gating_threshold:
-                    is_new = False
-                    break
-            if is_new:
-                self.tracks.append(Track(self.next_id, det['centroid'], np.zeros(4)))
+            if j not in assigned_dets:
+                self.tracks.append(Track(self.next_id, det['centroid']))
                 self.next_id += 1
 
-        # Render Frame
+        # 5. Render to Window and Capture Frame
         self.vis.clear_geometries()
         for g in geometries:
             self.vis.add_geometry(g, reset_bounding_box=self.first_frame)
         
-        self.first_frame = False
+        # Set a default camera view on first frame
+        if self.first_frame:
+            ctr = self.vis.get_view_control()
+            ctr.set_zoom(0.8)
+            self.first_frame = False
+
         self.vis.poll_events()
         self.vis.update_renderer()
+        
+        # Capture the image from the visualizer buffer
+        image = self.vis.capture_screen_float_buffer(do_render=True)
+        image = (np.asarray(image) * 255).astype(np.uint8)
+        image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
+        
+        # Add overlay text for Frame ID
+        cv2.putText(image, f"Frame: {frame_id}", (50, 50), 
+                    cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+        
+        self.video_writer.write(image)
 
     def close(self):
+        self.video_writer.release()
         self.vis.destroy_window()
+        print("Video saved as tracking_output.mp4")
 
 def main():
-    system = VisualTrackingSystem()
+    system = VisualTrackingSystem(output_video="human_tracking.mp4", fps=15)
     data_path = "mapAll/" 
     files = sorted([f for f in os.listdir(data_path) if f.endswith('.pcd')],
                    key=lambda x: int(re.search(r'(\d+)ms', x).group(1)))
 
+    print(f"Recording {len(files)} frames...")
     for i, filename in enumerate(files):
-        system.update_and_render(os.path.join(data_path, filename), i)
+        system.update_and_record(os.path.join(data_path, filename), i)
     
     system.close()
 
