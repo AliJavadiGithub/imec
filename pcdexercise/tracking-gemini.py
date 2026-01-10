@@ -12,10 +12,10 @@ o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
 class Track:
     def __init__(self, id, centroid, features):
         self.id = id
-        # x = [x, y, z, vx, vy, vz]
+        # State: [x, y, z, vx, vy, vz]
         self.kf = self.init_kalman(centroid)
         self.feature_history = [features]
-        self.hits = 1           # Number of consecutive detections
+        self.hits = 1           # Consecutive detections
         self.age = 1            # Total frames active
         self.skipped_frames = 0 
         self.is_static = False
@@ -23,19 +23,14 @@ class Track:
 
     def init_kalman(self, pos):
         kf = KalmanFilter(dim_x=6, dim_z=3)
-        # Constant velocity model
-        kf.F = np.eye(6)
+        kf.F = np.eye(6) # Constant velocity transition
         kf.H = np.array([[1, 0, 0, 0, 0, 0],
                          [0, 1, 0, 0, 0, 0],
                          [0, 0, 1, 0, 0, 0]])
-        
         kf.x[:3] = pos.reshape(3, 1)
-        # Increase P for initial state uncertainty
-        kf.P *= 5.0 
-        # Increase R to trust the model more than noisy DBSCAN centroids (Reduces Jitter)
-        kf.R *= 10.0    
-        # Low Q assumes smooth, constant motion
-        kf.Q = np.eye(6) * 0.01 
+        kf.P *= 5.0      # Initial uncertainty
+        kf.R *= 15.0     # High measurement noise to trust the model (Smoothes Speed)
+        kf.Q = np.eye(6) * 0.01 # Low process noise for steady motion
         return kf
 
     def get_avg_features(self):
@@ -48,19 +43,20 @@ class HumanTrackerMOT:
         self.lost_tracks = [] 
         self.history = []
         
-        # Hyperparameters for stability
-        self.min_hits = 3           # Frames required to "confirm" a track
-        self.max_skip_dynamic = 15  # Recovery window for moving targets
-        self.max_skip_static = 45   # Recovery window for targets that stopped
-        self.dist_weight = 0.9      # Focus primarily on spatial proximity
-        self.feat_weight = 0.1
-        self.gating_threshold = 1.2 # Max meters a person can move between frames
+        # Stability Hyperparameters
+        self.min_hits = 5           # Frames to confirm ID (Filters ghosts)
+        self.max_skip_dynamic = 25  # Grace period for moving targets
+        self.max_skip_static = 60   # Grace period for stationary targets
+        self.gating_threshold = 1.0 # Max meters per frame (Prevents ID swaps)
+        
+        # Detection Hyperparameters
+        self.eps = 0.55             # Bridging gaps in sparse point clouds
+        self.min_points = 8
 
     def is_valid_detection(self, features):
-        # [Width, Length, Height, Point Count]
         w, l, h, pts = features
-        # Filter for human-sized clusters
-        return (0.35 < h < 2.0) and (0.2 < w < 1.2) and (pts > 12)
+        # Filter for typical human bounding box dimensions and point density
+        return (0.4 < h < 2.0) and (0.2 < w < 1.0) and (pts > 10)
 
     def extract_features(self, cluster):
         bbox = cluster.get_axis_aligned_bounding_box()
@@ -69,13 +65,15 @@ class HumanTrackerMOT:
 
     def update(self, frame_id, timestamp, pcd_file_path):
         detections = []
-        
-        # 1. Detection Phase
         if os.path.exists(pcd_file_path):
             pcd = o3d.io.read_point_cloud(pcd_file_path)
             if not pcd.is_empty():
-                pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
-                labels = np.array(pcd.cluster_dbscan(eps=0.45, min_points=10))
+                # Pre-processing: Density normalization and noise removal
+                pcd = pcd.voxel_down_sample(voxel_size=0.04)
+                pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=1.5)
+                
+                # Clustering
+                labels = np.array(pcd.cluster_dbscan(eps=self.eps, min_points=self.min_points))
                 
                 for label in np.unique(labels[labels >= 0]):
                     indices = np.where(labels == label)[0]
@@ -84,65 +82,53 @@ class HumanTrackerMOT:
                     if self.is_valid_detection(feat):
                         detections.append({'centroid': cluster.get_center(), 'features': feat})
 
-        # 2. Prediction Phase
-        # Calculate dt from filename timestamps
+        # Predict Kalman states based on actual dt
         prev_ts = self.history[-1]['timestamp_ms'] if self.history else timestamp - 33
         dt = max((timestamp - prev_ts) / 1000.0, 0.001)
-        
         for t in self.tracks:
             for i in range(3): t.kf.F[i, i+3] = dt
             t.kf.predict()
             t.age += 1
 
-        # 3. Association Phase (Hungarian Algorithm)
+        # Association using the Hungarian Algorithm
         assigned_tracks, assigned_dets = set(), set()
         if self.tracks and detections:
             cost_matrix = np.zeros((len(self.tracks), len(detections)))
             for i, track in enumerate(self.tracks):
                 for j, det in enumerate(detections):
                     dist = np.linalg.norm(track.kf.x[:3].flatten() - det['centroid'])
-                    # Gating: if too far, make association impossible
-                    if dist > self.gating_threshold:
-                        cost_matrix[i, j] = 999.0
-                    else:
-                        feat_dist = np.linalg.norm(track.get_avg_features()[:2] - det['features'][:2])
-                        cost_matrix[i, j] = (self.dist_weight * dist) + (self.feat_weight * feat_dist)
+                    # Apply spatial gating to prohibit distant associations
+                    cost_matrix[i, j] = dist if dist < self.gating_threshold else 999.0
 
             rows, cols = linear_sum_assignment(cost_matrix)
             for r, c in zip(rows, cols):
                 if cost_matrix[r, c] < self.gating_threshold:
                     self.tracks[r].kf.update(detections[c]['centroid'])
-                    self.tracks[r].feature_history.append(detections[c]['features'])
                     self.tracks[r].last_seen_pos = detections[c]['centroid']
                     self.tracks[r].skipped_frames = 0
                     self.tracks[r].hits += 1
                     assigned_tracks.add(r)
                     assigned_dets.add(c)
 
-        # 4. Track Management
-        new_active_tracks = []
+        # Track management and recovery
+        active = []
         for i, t in enumerate(self.tracks):
-            if i not in assigned_tracks:
-                t.skipped_frames += 1
-                t.hits = 0 # Reset consecutive hits
-            
+            if i not in assigned_tracks: t.skipped_frames += 1
             speed = np.linalg.norm(t.kf.x[3:])
-            t.is_static = speed < 0.15
+            t.is_static = speed < 0.12 # Threshold for static vs moving status
             limit = self.max_skip_static if t.is_static else self.max_skip_dynamic
             
-            if t.skipped_frames <= limit:
-                new_active_tracks.append(t)
-            else:
-                self.lost_tracks.append(t)
-        self.tracks = new_active_tracks
+            if t.skipped_frames <= limit: active.append(t)
+            else: self.lost_tracks.append(t)
+        self.tracks = active
 
-        # 5. Initialization of New Tracks
+        # Re-Identification and Initialization
         for j, det in enumerate(detections):
             if j not in assigned_dets:
-                # Re-ID logic: Check lost tracks first
                 found_reid = False
+                # Try to resume a recently lost track near this detection
                 for lt in self.lost_tracks:
-                    if np.linalg.norm(lt.last_seen_pos - det['centroid']) < 1.5:
+                    if np.linalg.norm(lt.last_seen_pos - det['centroid']) < 1.2:
                         lt.kf.x[:3] = det['centroid'].reshape(3, 1)
                         lt.skipped_frames = 0
                         self.tracks.append(lt)
@@ -153,7 +139,7 @@ class HumanTrackerMOT:
                     self.tracks.append(Track(self.next_id, det['centroid'], det['features']))
                     self.next_id += 1
 
-        # 6. Record Results (Only for "Confirmed" tracks to reduce noise)
+        # Store confirmed detections
         curr_res = []
         for t in self.tracks:
             if t.skipped_frames == 0 and t.hits >= self.min_hits:
@@ -168,14 +154,13 @@ class HumanTrackerMOT:
         self.history.append({"frame_id": frame_id, "timestamp_ms": timestamp, "detections": curr_res})
 
     def finalize_results(self, json_name="tracking_results.json"):
-        # Final pass: Remove very short-lived tracks
+        # Post-process: Filter short tracks to eliminate noise and fragmentation
         all_ids = {}
         for frame in self.history:
             for det in frame['detections']:
                 all_ids[det['id']] = all_ids.get(det['id'], 0) + 1
         
-        valid_ids = [idx for idx, count in all_ids.items() if count > 20]
-        
+        valid_ids = [idx for idx, count in all_ids.items() if count > 30]
         final_history = []
         for frame in self.history:
             clean_dets = [d for d in frame['detections'] if d['id'] in valid_ids]
@@ -185,7 +170,7 @@ class HumanTrackerMOT:
         
         with open(json_name, 'w') as f:
             json.dump(final_history, f, indent=4)
-        print(f"✅ Refined results saved to {json_name}")
+        print(f"✅ Final Refined results saved to {json_name}")
 
 def main():
     tracker = HumanTrackerMOT()
@@ -193,10 +178,11 @@ def main():
     files = sorted([f for f in os.listdir(data_path) if f.endswith('.pcd')],
                    key=lambda x: int(re.search(r'(\d+)ms', x).group(1)))
 
+    print(f"Processing {len(files)} frames...")
     for i, filename in enumerate(files):
         ts = int(re.search(r'(\d+)ms', filename).group(1))
         tracker.update(i, ts, os.path.join(data_path, filename))
-        if i % 100 == 0: print(f"Processing frame {i}/{len(files)}...")
+        if i % 100 == 0: print(f"Progress: {i}/{len(files)}")
 
     tracker.finalize_results()
 
