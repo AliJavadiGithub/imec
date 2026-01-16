@@ -203,7 +203,6 @@ Trajectory and velocity plots clearly reflect continuous motion without abrupt j
 ### Future Improvements
 
 * Replace geometric heuristics with learned point cloud features (PointNet / PointTransformer)
-* Extend to multi-human tracking scenarios
 * Use Mahalanobis distance for adaptive gating
 * Introduce confidence scoring per track
 * Implement C++ version using PCL for real-time performance
