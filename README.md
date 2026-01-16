@@ -248,7 +248,6 @@ Velocity Plausibility     : 0.911
 ### Future Improvements
 
 * Learned point cloud features (PointNet / PointTransformer)
-* Multi-human tracking support
 * Mahalanobis distance gating
 * Confidence scores per track
 * Real-time C++ / PCL implementation
