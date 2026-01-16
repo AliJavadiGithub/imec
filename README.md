@@ -1,10 +1,3 @@
-Below is a complete **REPORT.md** tailored to your exact implementation and the exercise requirements.
-It is written as if it accompanies the provided codebase and results.
-
-You can copy–paste this directly into `REPORT.md`.
-
----
-
 # Human Tracking in Point Cloud Space – Report
 
 ## 1. Algorithm Description
