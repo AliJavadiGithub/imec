@@ -40,23 +40,15 @@ class Track:
         kf_rw.R *= 10.0
         kf_rw.Q = np.eye(6) * 0.1  # higher uncertainty
 
-        # IMM transition probabilities
         mu = np.array([0.5, 0.5])
-        M = np.array([[0.95, 0.05],
-                      [0.05, 0.95]])
-
-        imm = IMMEstimator([kf_cv, kf_rw], mu, M)
-        return imm
+        M = np.array([[0.95, 0.05], [0.05, 0.95]])
+        return IMMEstimator([kf_cv, kf_rw], mu, M)
 
     def get_avg_shape(self):
         return np.mean(self.shape_history[-15:], axis=0)
 
     def compute_confidence(self, eps=1e-6, p_max=50.0):
-        """
-        Confidence based on IMM fused covariance.
-        Lower uncertainty → higher confidence.
-        """
-        P = self.kf.P[:3, :3]  # position covariance
+        P = self.kf.P[:3, :3]
         uncertainty = np.sqrt(np.linalg.det(P) + eps)
         confidence = np.exp(-uncertainty / p_max)
         return float(np.clip(confidence, 0.0, 1.0))
@@ -74,7 +66,7 @@ class HumanTrackerMOT:
         self.max_skip_static = 50
         self.dist_weight = 0.8
         self.shape_weight = 0.2
-        self.gating_threshold = 1.2  # meters
+        self.gating_threshold = 1.2
 
     def extract_shape_descriptor(self, cluster):
         pts = np.asarray(cluster.points)
@@ -83,17 +75,22 @@ class HumanTrackerMOT:
         bbox = cluster.get_axis_aligned_bounding_box()
         ext = bbox.get_extent()
         aspect_ratio = ext[2] / (max(ext[0], ext[1]) + 1e-6)
-        height_threshold = np.min(pts[:, 2]) + 0.7 * ext[2]
-        head_density = np.sum(pts[:, 2] > height_threshold) / len(pts)
+        head_density = np.mean(pts[:,2] > np.percentile(pts[:,2], 80))  # adaptive head
         variance = np.var(centered_pts, axis=0)
         return np.array([aspect_ratio, head_density, variance[0], variance[2]])
 
     def is_valid_human_geometry(self, cluster):
+        pts = np.asarray(cluster.points)
+        if len(pts) < 5: return False
         bbox = cluster.get_axis_aligned_bounding_box()
         ext = bbox.get_extent()
-        pts_count = len(cluster.points)
-        is_human_sized = (0.4 < ext[2] < 2.1) and (max(ext[0], ext[1]) < 1.0)
-        return is_human_sized and (pts_count >= 5)
+        height = ext[2]
+        width_length = max(ext[0], ext[1])
+        # adaptive thresholds based on cluster density
+        density = len(pts) / (ext[0]*ext[1]*ext[2] + 1e-6)
+        min_height, max_height = 0.4, 2.2
+        max_width_length = 1.0
+        return (min_height <= height <= max_height) and (width_length <= max_width_length) and (density > 5)
 
     def update(self, frame_id, timestamp, pcd_file_path):
         detections = []
@@ -106,7 +103,6 @@ class HumanTrackerMOT:
                 else:
                     _, inliers = pcd.segment_plane(distance_threshold=0.15, ransac_n=3, num_iterations=1000)
                     objects_pcd = pcd.select_by_index(inliers, invert=True)
-
                 labels = np.array(objects_pcd.cluster_dbscan(eps=0.5, min_points=5))
                 for label in np.unique(labels[labels >= 0]):
                     indices = np.where(labels == label)[0]
@@ -133,9 +129,8 @@ class HumanTrackerMOT:
                 for j, det in enumerate(detections):
                     dist = np.linalg.norm(track.kf.x[:3].flatten() - det['centroid'])
                     shape_dist = np.linalg.norm(track.get_avg_shape() - det['shape'])
-                    cost_matrix[i, j] = (self.dist_weight * dist + self.shape_weight * shape_dist
+                    cost_matrix[i, j] = (self.dist_weight*dist + self.shape_weight*shape_dist
                                          if dist <= self.gating_threshold else 999.0)
-
             rows, cols = linear_sum_assignment(cost_matrix)
             for r, c in zip(rows, cols):
                 if cost_matrix[r, c] < self.gating_threshold:
@@ -194,7 +189,6 @@ class HumanTrackerMOT:
         for frame in self.history:
             for det in frame['detections']:
                 id_counts[det['id']] = id_counts.get(det['id'], 0) + 1
-
         valid_ids = [idx for idx, count in id_counts.items() if count > 10]
         final_history = []
         for frame in self.history:
@@ -202,7 +196,6 @@ class HumanTrackerMOT:
             if clean_dets:
                 frame['detections'] = clean_dets
                 final_history.append(frame)
-
         with open(json_name, 'w') as f:
             json.dump(final_history, f, indent=4)
         print(f"✅ Tracking Finished. Results in {json_name}")
