@@ -4,7 +4,7 @@ import json
 import numpy as np
 import open3d as o3d
 from scipy.optimize import linear_sum_assignment
-from filterpy.kalman import KalmanFilter
+from filterpy.kalman import KalmanFilter, IMMEstimator
 
 # --- System Settings ---
 o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
@@ -12,7 +12,7 @@ o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
 class Track:
     def __init__(self, id, centroid, shape_feature):
         self.id = id
-        self.kf = self.init_kalman(centroid)
+        self.kf = self.init_imm(centroid)
         self.shape_history = [shape_feature]
         self.hits = 1           
         self.age = 1            
@@ -20,17 +20,35 @@ class Track:
         self.is_static = False
         self.last_seen_pos = centroid
 
-    def init_kalman(self, pos):
-        kf = KalmanFilter(dim_x=6, dim_z=3)
-        kf.F = np.eye(6)
-        kf.H = np.array([[1, 0, 0, 0, 0, 0],
-                         [0, 1, 0, 0, 0, 0],
-                         [0, 0, 1, 0, 0, 0]])
-        kf.x[:3] = pos.reshape(3, 1)
-        kf.P *= 5.0 
-        kf.R *= 10.0 # Trust prediction slightly more due to sparse jitter
-        kf.Q = np.eye(6) * 0.01 
-        return kf
+    def init_imm(self, pos):
+        # --- Model 1: Constant Velocity ---
+        kf_cv = KalmanFilter(dim_x=6, dim_z=3)
+        kf_cv.F = np.eye(6)
+        kf_cv.H = np.array([[1, 0, 0, 0, 0, 0],
+                            [0, 1, 0, 0, 0, 0],
+                            [0, 0, 1, 0, 0, 0]])
+        kf_cv.x[:3] = pos.reshape(3, 1)
+        kf_cv.P *= 5.0
+        kf_cv.R *= 10.0
+        kf_cv.Q = np.eye(6) * 0.01
+
+        # --- Model 2: Random Walk (static) ---
+        kf_rw = KalmanFilter(dim_x=6, dim_z=3)
+        kf_rw.F = np.eye(6)
+        kf_rw.H = kf_cv.H.copy()
+        kf_rw.x[:3] = pos.reshape(3, 1)
+        kf_rw.P *= 5.0
+        kf_rw.R *= 10.0
+        kf_rw.Q = np.eye(6) * 0.1  # more uncertainty
+
+        # IMM transition probabilities
+        mu = np.array([0.5, 0.5])
+        M = np.array([[0.95, 0.05],
+                    [0.05, 0.95]])
+
+        imm = IMMEstimator([kf_cv, kf_rw], mu, M)
+        return imm
+
 
     def get_avg_shape(self):
         return np.mean(self.shape_history[-15:], axis=0)
@@ -132,8 +150,11 @@ class HumanTrackerMOT:
         prev_ts = self.history[-1]['timestamp_ms'] if self.history else timestamp - 33
         dt = max((timestamp - prev_ts) / 1000.0, 0.001)
         for t in self.tracks:
-            for i in range(3): t.kf.F[i, i+3] = dt
+            for f in t.kf.filters:
+                for i in range(3):
+                    f.F[i, i+3] = dt
             t.kf.predict()
+
             t.age += 1
 
         # Association (Hungarian Algorithm)
