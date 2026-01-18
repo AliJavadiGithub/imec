@@ -3,3 +3,4 @@ mapHumanOnly/
 *.mp4
 .venv/
 *.pyc
+*.json
