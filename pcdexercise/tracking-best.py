@@ -34,6 +34,23 @@ class Track:
 
     def get_avg_shape(self):
         return np.mean(self.shape_history[-15:], axis=0)
+    
+    def compute_confidence(self, min_hits, tau=10.0, v_max=2.0):
+        # 1. Track maturity
+        c_hits = min(1.0, self.hits / float(min_hits))
+
+        # 2. Visibility / occlusion penalty
+        c_visibility = np.exp(-self.skipped_frames / tau)
+
+        # 3. Motion stability penalty
+        speed = np.linalg.norm(self.kf.x[3:])
+        c_motion = np.exp(-speed / v_max)
+
+        # Weighted combination
+        confidence = (0.5 * c_hits) + (0.3 * c_visibility) + (0.2 * c_motion)
+
+        return float(np.clip(confidence, 0.0, 1.0))
+
 
 class HumanTrackerMOT:
     def __init__(self):
@@ -84,10 +101,20 @@ class HumanTrackerMOT:
                 
                 # 2. Ground Plane Subtraction
                 # This prevents the tracker from 'tripping' on floor points
-                plane_model, inliers = pcd.segment_plane(distance_threshold=0.15,
-                                                         ransac_n=3,
-                                                         num_iterations=1000)
-                objects_pcd = pcd.select_by_index(inliers, invert=True)
+                # CHECK 2: Critical check for RANSAC requirement
+                # ransac_n is 3, so we must have at least 3 points
+                if len(pcd.points) < 3:
+                    # If we don't have enough points for a plane, 
+                    # we skip segmentation and treat the whole PCD as objects
+                    objects_pcd = pcd
+                else:
+                    _, inliers = pcd.segment_plane(
+                        distance_threshold=0.15,
+                        ransac_n=3,
+                        num_iterations=1000
+                    )
+                    objects_pcd = pcd.select_by_index(inliers, invert=True)
+                
 
                 # 3. Enhanced Clustering
                 labels = np.array(objects_pcd.cluster_dbscan(eps=0.5, min_points=5))
@@ -166,13 +193,19 @@ class HumanTrackerMOT:
         for t in self.tracks:
             if t.skipped_frames == 0 and t.hits >= self.min_hits:
                 pos = t.kf.x[:3].flatten().tolist()
-                speed = float(np.linalg.norm(t.kf.x[3:]))
+                vel = t.kf.x[3:].flatten()
+                speed = float(np.linalg.norm(vel))
+                confidence = t.compute_confidence(self.min_hits)
+
                 curr_res.append({
-                    "id": int(t.id), 
+                    "id": int(t.id),
                     "position": [round(p, 3) for p in pos],
+                    "velocity": [round(v, 3) for v in vel],  # 3D velocity [vx, vy, vz]
                     "speed": round(speed, 3),
-                    "status": "STATIC" if t.is_static else "MOVING"
+                    "status": "STATIC" if t.is_static else "MOVING",
+                    "confidence": round(confidence, 3)
                 })
+
         self.history.append({"frame_id": frame_id, "timestamp_ms": timestamp, "detections": curr_res})
 
     def finalize_results(self, json_name="tracking_results.json"):
@@ -194,15 +227,42 @@ class HumanTrackerMOT:
             json.dump(final_history, f, indent=4)
         print(f"✅ Tracking Finished. Results in {json_name}")
 
+def get_user_choice():
+    """Prompt user to choose between human-only or entire map"""
+    print("\n" + "="*60)
+    print("Point Cloud Dataset")
+    print("="*60)
+    print("\nChoose Dataset:")
+    print("  [1] Human Only (mapHumanOnly)")
+    print("  [2] Entire Occupancy Map (mapAll)")
+    print("")
+    
+    while True:
+        choice = input("Enter your choice (1 or 2): ").strip()
+        if choice == "1":
+            return "mapHumanOnly"
+        elif choice == "2":
+            return "mapAll"
+        else:
+            print("Invalid choice. Please enter 1 or 2.")
+
 def main():
     tracker = HumanTrackerMOT()
-    data_path = "mapAll/" 
-    files = sorted([f for f in os.listdir(data_path) if f.endswith('.pcd')],
+
+    # Get user choice
+    map_choice = get_user_choice()
+    
+    # Get current directory
+    current_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    data_dir = os.path.join(current_dir, map_choice)
+
+    files = sorted([f for f in os.listdir(data_dir) if f.endswith('.pcd')],
                    key=lambda x: int(re.search(r'(\d+)ms', x).group(1)))
 
     for i, filename in enumerate(files):
         ts = int(re.search(r'(\d+)ms', filename).group(1))
-        tracker.update(i, ts, os.path.join(data_path, filename))
+        tracker.update(i, ts, os.path.join(data_dir, filename))
         if i % 50 == 0: print(f"Processing Frame {i}/{len(files)}")
 
     tracker.finalize_results()

@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.optimize import linear_sum_assignment
-from track import Track
+from .track import Track
 
 
 class HumanTrackerMOT:
@@ -97,14 +97,19 @@ class HumanTrackerMOT:
         for t in self.tracks:
             if t.skipped_frames == 0 and t.hits >= self.min_hits:
                 pos = t.kf.x[:3].flatten().tolist()
-                speed = float(np.linalg.norm(t.kf.x[3:]))
+                vel = t.kf.x[3:].flatten()                
+                speed = float(np.linalg.norm(vel))
+                confidence = t.compute_confidence(self.min_hits)
 
                 frame_out.append({
-                    "id": t.id,
+                    "id": int(t.id),
                     "position": [round(p, 3) for p in pos],
+                    "velocity": [round(v, 3) for v in vel],  # 3D velocity [vx, vy, vz]
                     "speed": round(speed, 3),
-                    "status": "STATIC" if t.is_static else "MOVING"
+                    "status": "STATIC" if t.is_static else "MOVING",
+                    "confidence": round(confidence, 3)
                 })
+
 
         self.history.append({
             "frame_id": frame_id,

@@ -29,3 +29,20 @@ class Track:
 
     def get_avg_shape(self):
         return np.mean(self.shape_history[-15:], axis=0)
+
+
+    def compute_confidence(self, min_hits, tau=10.0, v_max=2.0):
+        # 1. Track maturity
+        c_hits = min(1.0, self.hits / float(min_hits))
+
+        # 2. Visibility / occlusion penalty
+        c_visibility = np.exp(-self.skipped_frames / tau)
+
+        # 3. Motion stability penalty
+        speed = np.linalg.norm(self.kf.x[3:])
+        c_motion = np.exp(-speed / v_max)
+
+        # Weighted combination
+        confidence = (0.5 * c_hits) + (0.3 * c_visibility) + (0.2 * c_motion)
+
+        return float(np.clip(confidence, 0.0, 1.0))
