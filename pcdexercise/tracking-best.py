@@ -14,14 +14,13 @@ class Track:
         self.id = id
         self.kf = self.init_imm(centroid)
         self.shape_history = [shape_feature]
-        self.hits = 1           
-        self.age = 1            
-        self.skipped_frames = 0 
-        self.is_static = False
+        self.hits = 1
+        self.age = 1
+        self.skipped_frames = 0
         self.last_seen_pos = centroid
 
     def init_imm(self, pos):
-        # --- Model 1: Constant Velocity ---
+        # --- Model 1: Constant Velocity (CV) ---
         kf_cv = KalmanFilter(dim_x=6, dim_z=3)
         kf_cv.F = np.eye(6)
         kf_cv.H = np.array([[1, 0, 0, 0, 0, 0],
@@ -32,59 +31,50 @@ class Track:
         kf_cv.R *= 10.0
         kf_cv.Q = np.eye(6) * 0.01
 
-        # --- Model 2: Random Walk (static) ---
+        # --- Model 2: Random Walk (RW) ---
         kf_rw = KalmanFilter(dim_x=6, dim_z=3)
         kf_rw.F = np.eye(6)
         kf_rw.H = kf_cv.H.copy()
         kf_rw.x[:3] = pos.reshape(3, 1)
         kf_rw.P *= 5.0
         kf_rw.R *= 10.0
-        kf_rw.Q = np.eye(6) * 0.1  # more uncertainty
+        kf_rw.Q = np.eye(6) * 0.1  # higher uncertainty
 
         # IMM transition probabilities
         mu = np.array([0.5, 0.5])
         M = np.array([[0.95, 0.05],
-                    [0.05, 0.95]])
+                      [0.05, 0.95]])
 
         imm = IMMEstimator([kf_cv, kf_rw], mu, M)
         return imm
 
-
     def get_avg_shape(self):
         return np.mean(self.shape_history[-15:], axis=0)
-    
+
     def compute_confidence(self, eps=1e-6, p_max=50.0):
         """
         Confidence based on IMM fused covariance.
         Lower uncertainty → higher confidence.
         """
-        # Use position covariance only (x, y, z)
-        P = self.kf.P[:3, :3]
-
-        # Scalar uncertainty measure
+        P = self.kf.P[:3, :3]  # position covariance
         uncertainty = np.sqrt(np.linalg.det(P) + eps)
-
-        # Convert uncertainty to confidence
         confidence = np.exp(-uncertainty / p_max)
-
         return float(np.clip(confidence, 0.0, 1.0))
-
-
 
 class HumanTrackerMOT:
     def __init__(self):
         self.tracks = []
         self.next_id = 1
-        self.lost_tracks = [] 
+        self.lost_tracks = []
         self.history = []
-        
+
         # Hyperparameters
-        self.min_hits = 3           # Reduced slightly for sparse data
-        self.max_skip_dynamic = 20  
-        self.max_skip_static = 50   
-        self.dist_weight = 0.80     
-        self.shape_weight = 0.20    
-        self.gating_threshold = 1.2 # Max meters between frames
+        self.min_hits = 3
+        self.max_skip_dynamic = 20
+        self.max_skip_static = 50
+        self.dist_weight = 0.8
+        self.shape_weight = 0.2
+        self.gating_threshold = 1.2  # meters
 
     def extract_shape_descriptor(self, cluster):
         pts = np.asarray(cluster.points)
@@ -93,20 +83,16 @@ class HumanTrackerMOT:
         bbox = cluster.get_axis_aligned_bounding_box()
         ext = bbox.get_extent()
         aspect_ratio = ext[2] / (max(ext[0], ext[1]) + 1e-6)
-        height_threshold = np.min(pts[:,2]) + 0.7 * ext[2]
-        head_density = np.sum(pts[:,2] > height_threshold) / len(pts)
+        height_threshold = np.min(pts[:, 2]) + 0.7 * ext[2]
+        head_density = np.sum(pts[:, 2] > height_threshold) / len(pts)
         variance = np.var(centered_pts, axis=0)
         return np.array([aspect_ratio, head_density, variance[0], variance[2]])
 
     def is_valid_human_geometry(self, cluster):
-        """Refined heuristic based on your bounds [6.0, 6.5, 1.75]"""
         bbox = cluster.get_axis_aligned_bounding_box()
-        ext = bbox.get_extent() # [width, length, height]
+        ext = bbox.get_extent()
         pts_count = len(cluster.points)
-        
-        # Human dimensions in meters: 
-        # Width/Length usually < 0.8m, Height between 0.8m and 2.1m
-        is_human_sized = (0.7 < ext[2] < 2.1) and (max(ext[0], ext[1]) < 1.0)
+        is_human_sized = (0.4 < ext[2] < 2.1) and (max(ext[0], ext[1]) < 1.0)
         return is_human_sized and (pts_count >= 5)
 
     def update(self, frame_id, timestamp, pcd_file_path):
@@ -114,51 +100,32 @@ class HumanTrackerMOT:
         if os.path.exists(pcd_file_path):
             pcd = o3d.io.read_point_cloud(pcd_file_path)
             if not pcd.is_empty():
-                # --- GEOMETRIC IMPROVEMENT START ---
-                # 1. Clean noise
                 pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=1.5)
-                
-                # 2. Ground Plane Subtraction
-                # This prevents the tracker from 'tripping' on floor points
-                # CHECK 2: Critical check for RANSAC requirement
-                # ransac_n is 3, so we must have at least 3 points
                 if len(pcd.points) < 3:
-                    # If we don't have enough points for a plane, 
-                    # we skip segmentation and treat the whole PCD as objects
                     objects_pcd = pcd
                 else:
-                    _, inliers = pcd.segment_plane(
-                        distance_threshold=0.15,
-                        ransac_n=3,
-                        num_iterations=1000
-                    )
+                    _, inliers = pcd.segment_plane(distance_threshold=0.15, ransac_n=3, num_iterations=1000)
                     objects_pcd = pcd.select_by_index(inliers, invert=True)
-                
 
-                # 3. Enhanced Clustering
                 labels = np.array(objects_pcd.cluster_dbscan(eps=0.5, min_points=5))
                 for label in np.unique(labels[labels >= 0]):
                     indices = np.where(labels == label)[0]
                     cluster = objects_pcd.select_by_index(indices)
                     if self.is_valid_human_geometry(cluster):
                         detections.append({
-                            'centroid': cluster.get_center(), 
+                            'centroid': cluster.get_center(),
                             'shape': self.extract_shape_descriptor(cluster)
                         })
-                # --- GEOMETRIC IMPROVEMENT END ---
 
-        # Predict
         prev_ts = self.history[-1]['timestamp_ms'] if self.history else timestamp - 33
         dt = max((timestamp - prev_ts) / 1000.0, 0.001)
+
         for t in self.tracks:
             for f in t.kf.filters:
-                for i in range(3):
-                    f.F[i, i+3] = dt
+                for i in range(3): f.F[i, i+3] = dt
             t.kf.predict()
-
             t.age += 1
 
-        # Association (Hungarian Algorithm)
         assigned_tracks, assigned_dets = set(), set()
         if self.tracks and detections:
             cost_matrix = np.zeros((len(self.tracks), len(detections)))
@@ -166,11 +133,8 @@ class HumanTrackerMOT:
                 for j, det in enumerate(detections):
                     dist = np.linalg.norm(track.kf.x[:3].flatten() - det['centroid'])
                     shape_dist = np.linalg.norm(track.get_avg_shape() - det['shape'])
-                    
-                    if dist > self.gating_threshold:
-                        cost_matrix[i, j] = 999.0
-                    else:
-                        cost_matrix[i, j] = (self.dist_weight * dist) + (self.shape_weight * shape_dist)
+                    cost_matrix[i, j] = (self.dist_weight * dist + self.shape_weight * shape_dist
+                                         if dist <= self.gating_threshold else 999.0)
 
             rows, cols = linear_sum_assignment(cost_matrix)
             for r, c in zip(rows, cols):
@@ -183,7 +147,6 @@ class HumanTrackerMOT:
                     assigned_tracks.add(r)
                     assigned_dets.add(c)
 
-        # Track Management
         active = []
         for i, t in enumerate(self.tracks):
             if i not in assigned_tracks: t.skipped_frames += 1
@@ -194,7 +157,6 @@ class HumanTrackerMOT:
             else: self.lost_tracks.append(t)
         self.tracks = active
 
-        # New Tracks / Re-ID
         for j, det in enumerate(detections):
             if j not in assigned_dets:
                 found_reid = False
@@ -210,7 +172,6 @@ class HumanTrackerMOT:
                     self.tracks.append(Track(self.next_id, det['centroid'], det['shape']))
                     self.next_id += 1
 
-        # Logging Results
         curr_res = []
         for t in self.tracks:
             if t.skipped_frames == 0 and t.hits >= self.min_hits:
@@ -218,25 +179,22 @@ class HumanTrackerMOT:
                 vel = t.kf.x[3:].flatten()
                 speed = float(np.linalg.norm(vel))
                 confidence = t.compute_confidence()
-
                 curr_res.append({
-                    "id": int(t.id),
-                    "position": [round(p, 3) for p in pos],
-                    "velocity": [round(v, 3) for v in vel],  # 3D velocity [vx, vy, vz]
-                    "speed": round(speed, 3),
-                    "status": "STATIC" if t.is_static else "MOVING",
-                    "confidence": round(confidence, 3)
+                    'id': int(t.id),
+                    'position': [round(p,3) for p in pos],
+                    'velocity': [round(v,3) for v in vel],
+                    'speed': round(speed,3),
+                    'status': 'STATIC' if t.is_static else 'MOVING',
+                    'confidence': round(confidence,3)
                 })
+        self.history.append({'frame_id': frame_id, 'timestamp_ms': timestamp, 'detections': curr_res})
 
-        self.history.append({"frame_id": frame_id, "timestamp_ms": timestamp, "detections": curr_res})
-
-    def finalize_results(self, json_name="tracking_results.json"):
-        # Reduced count threshold for shorter PCD sequences
+    def finalize_results(self, json_name='tracking_results.json'):
         id_counts = {}
         for frame in self.history:
             for det in frame['detections']:
                 id_counts[det['id']] = id_counts.get(det['id'], 0) + 1
-        
+
         valid_ids = [idx for idx, count in id_counts.items() if count > 10]
         final_history = []
         for frame in self.history:
@@ -244,39 +202,30 @@ class HumanTrackerMOT:
             if clean_dets:
                 frame['detections'] = clean_dets
                 final_history.append(frame)
-        
+
         with open(json_name, 'w') as f:
             json.dump(final_history, f, indent=4)
         print(f"✅ Tracking Finished. Results in {json_name}")
 
+
 def get_user_choice():
-    """Prompt user to choose between human-only or entire map"""
-    print("\n" + "="*60)
-    print("Point Cloud Dataset")
-    print("="*60)
-    print("\nChoose Dataset:")
-    print("  [1] Human Only (mapHumanOnly)")
-    print("  [2] Entire Occupancy Map (mapAll)")
-    print("")
-    
+    print('\n' + '='*60)
+    print('Point Cloud Dataset')
+    print('='*60)
+    print('\nChoose Dataset:')
+    print('  [1] Human Only (mapHumanOnly)')
+    print('  [2] Entire Occupancy Map (mapAll)')
     while True:
-        choice = input("Enter your choice (1 or 2): ").strip()
-        if choice == "1":
-            return "mapHumanOnly"
-        elif choice == "2":
-            return "mapAll"
-        else:
-            print("Invalid choice. Please enter 1 or 2.")
+        choice = input('Enter your choice (1 or 2): ').strip()
+        if choice == '1': return 'mapHumanOnly'
+        elif choice == '2': return 'mapAll'
+        else: print('Invalid choice. Please enter 1 or 2.')
+
 
 def main():
     tracker = HumanTrackerMOT()
-
-    # Get user choice
     map_choice = get_user_choice()
-    
-    # Get current directory
     current_dir = os.path.dirname(os.path.abspath(__file__))
-    
     data_dir = os.path.join(current_dir, map_choice)
 
     files = sorted([f for f in os.listdir(data_dir) if f.endswith('.pcd')],
@@ -289,5 +238,6 @@ def main():
 
     tracker.finalize_results()
 
-if __name__ == "__main__":
+
+if __name__ == '__main__':
     main()
