@@ -9,7 +9,6 @@ Robust multi-object human tracking in 3D point clouds.
 - Re-ID: spatial proximity
 - Output: tracking_results.json (unchanged schema)
 
-Author: Refactored for clean architecture & safety
 """
 
 import os
