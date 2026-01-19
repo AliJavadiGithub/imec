@@ -44,6 +44,33 @@ def visualize_tracking(json_path="tracking_results.json"):
     ax2.legend()
 
     plt.tight_layout()
+
+    # --- added code to save plots as separate PNG files ---
+    fig_traj, ax_traj = plt.subplots(figsize=(10, 6))
+    for tid, tr in tracks.items():
+        ax_traj.plot(tr["x"], tr["y"], label=f"ID {tid}")
+    ax_traj.set_title("Trajectory (Top-Down)")
+    ax_traj.set_xlabel("X (m)")
+    ax_traj.set_ylabel("Y (m)")
+    ax_traj.grid()
+    ax_traj.legend()
+    fig_traj.tight_layout()
+    fig_traj.savefig("trajectory.png")
+    plt.close(fig_traj)
+
+    fig_speed, ax_speed = plt.subplots(figsize=(10, 6))
+    for tid, tr in tracks.items():
+        ax_speed.plot(tr["t"], tr["speed"], label=f"ID {tid}")
+    ax_speed.set_title("Speed vs Time")
+    ax_speed.set_xlabel("Time (s)")
+    ax_speed.set_ylabel("Speed (m/s)")
+    ax_speed.grid()
+    ax_speed.legend()
+    fig_speed.tight_layout()
+    fig_speed.savefig("speed.png")
+    plt.close(fig_speed)
+    # --- end added code ---
+
     plt.show()
 
 
