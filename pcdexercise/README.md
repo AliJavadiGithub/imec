@@ -44,9 +44,6 @@ This project detects humans in LiDAR / depth-map point clouds, tracks them over 
 
 ---
 
-
----
-
 ## ⚙️ Requirements
 
 - Python **3.8+**
