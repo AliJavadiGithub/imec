@@ -42,14 +42,16 @@ This project detects humans in LiDAR / depth-map point clouds, tracks them over 
 ├── tracking_results.json          # Generated tracking output
 └── tracking_playback.mp4          # Recorded playback video
 
+
 ---
 
 ## ⚙️ Requirements
 
 - Python **3.8+**
-- System dependencies for Open3D and OpenCV (GPU optional)
+- System dependencies for **Open3D** and **OpenCV**
 
-Python packages (installed automatically):
+Python packages (installed via Makefile):
+
 - `open3d`
 - `numpy`
 - `scipy`
@@ -63,9 +65,11 @@ Python packages (installed automatically):
 ## 🚀 Quick Start
 
 ### 1. Create Virtual Environment
+
 ```bash
 make venv
 source .venv/bin/activate
+
 
 
 ### 2. Install Dependencies
