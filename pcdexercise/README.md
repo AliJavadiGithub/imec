@@ -43,6 +43,7 @@ This project detects humans in LiDAR / depth-map point clouds, tracks them over 
 └── tracking_playback.mp4          # Recorded playback video
 
 
+
 ---
 
 ## ⚙️ Requirements
@@ -69,6 +70,7 @@ Python packages (installed via Makefile):
 ```bash
 make venv
 source .venv/bin/activate
+
 
 
 
