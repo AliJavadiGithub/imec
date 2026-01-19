@@ -82,7 +82,7 @@ $$v = \| \dot{\mathbf{p}} \|$$
 - Dynamic tracks are removed faster to prevent drift
 
 A lightweight **spatial re-identification** allows recovery if:
-$$\| \mathbf{p}_{\text{lost}} - \mathbf{p}_{\text{new}} \| < d_{\text{reID}}$$
+$$| \mathbf{p}_{\text{lost}} - \mathbf{p}_{\text{new}} | < d_{\text{reID}}$$
 
 Only tracks with sufficient temporal support are reported.
 
@@ -164,7 +164,7 @@ Large jumps indicate implicit ID switches.
 ### 3. Velocity Estimation
 
 Instantaneous speed:
-$$v_{i} = \frac{\| \mathbf{p}_{i+1} - \mathbf{p}_i \|}{t_{i+1} - t_i}$$
+$$v_i = \frac{| \mathbf{p}_{i+1} - \mathbf{p}_i |}{t_{i+1} - t_i}$$
 
 ---
 
