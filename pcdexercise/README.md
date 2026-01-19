@@ -61,9 +61,7 @@ Python packages (installed via Makefile):
 - `filterpy`
 - `opencv-python`
 
-```
 
-```
 
 ## 🚀 Quick Start
 
@@ -72,7 +70,7 @@ Python packages (installed via Makefile):
 ```bash
 make venv
 source .venv/bin/activate
-
+```
 
 
 
