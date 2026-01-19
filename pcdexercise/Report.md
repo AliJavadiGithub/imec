@@ -135,7 +135,7 @@ Evaluation was performed **without ground truth** using proxy metrics:
 
 The following plot shows the estimated **2D ground-plane trajectory** of tracked humans:
 
-![Trajectory (Top-Down)](trajectory_top_down.png)
+![Trajectory (Top-Down)](trajectory.png)
 
 ---
 
@@ -143,7 +143,7 @@ The following plot shows the estimated **2D ground-plane trajectory** of tracked
 
 The plot below visualizes **instantaneous speed over time**, highlighting motion patterns and pauses:
 
-![Speed vs Time](speed_vs_time.png)
+![Speed vs Time](speed.png)
 
 ---
 
