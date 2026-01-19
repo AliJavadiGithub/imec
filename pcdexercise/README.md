@@ -28,7 +28,7 @@ This project detects humans in LiDAR / depth-map point clouds, tracks them over 
 
 ## 📁 Project Structure
 
-
+```
 
 .
 ├── Makefile
@@ -41,9 +41,6 @@ This project detects humans in LiDAR / depth-map point clouds, tracks them over 
 ├── mapAll/                        # Full environment point clouds
 ├── tracking_results.json          # Generated tracking output
 └── tracking_playback.mp4          # Recorded playback video
-
-````
-
 
 ---
 
