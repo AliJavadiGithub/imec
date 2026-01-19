@@ -1,35 +1,21 @@
 import numpy as np
-from filterpy.kalman import KalmanFilter
+from filterpy.kalman import KalmanFilter, IMMEstimator
 
+def build_imm_filter(initial_pos):
+    def make_kf(q):
+        kf = KalmanFilter(dim_x=6, dim_z=3)
+        kf.F = np.eye(6)
+        kf.H = np.block([[np.eye(3), np.zeros((3, 3))]])
+        kf.x[:3] = initial_pos.reshape(3, 1)
+        kf.P *= 5.0
+        kf.R *= 10.0
+        kf.Q = np.eye(6) * q
+        return kf
 
-class MotionModel:
-    """
-    Constant-velocity Kalman filter wrapper.
-    """
+    cv = make_kf(0.01)
+    rw = make_kf(0.1)
 
-    def __init__(self, position: np.ndarray):
-        self.kf = KalmanFilter(dim_x=6, dim_z=3)
-        self.kf.F = np.eye(6)
-        self.kf.H = np.hstack((np.eye(3), np.zeros((3, 3))))
-        self.kf.x[:3] = position.reshape(3, 1)
+    mu = np.array([0.5, 0.5])
+    trans = np.array([[0.95, 0.05], [0.05, 0.95]])
 
-        self.kf.P *= 5.0
-        self.kf.R *= 10.0
-        self.kf.Q = np.eye(6) * 0.01
-
-    def predict(self, dt: float):
-        for i in range(3):
-            self.kf.F[i, i + 3] = dt
-        self.kf.predict()
-
-    def update(self, position: np.ndarray):
-        self.kf.update(position)
-
-    def position(self):
-        return self.kf.x[:3].flatten()
-
-    def velocity(self):
-        return self.kf.x[3:].flatten()
-
-    def speed(self) -> float:
-        return float(np.linalg.norm(self.velocity()))
+    return IMMEstimator([cv, rw], mu, trans)
