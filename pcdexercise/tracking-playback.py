@@ -26,7 +26,6 @@ import cv2
 import numpy as np
 import open3d as o3d
 
-
 # =========================
 # Utility
 # =========================
@@ -37,9 +36,20 @@ def extract_timestamp_ms(filename: str) -> int:
 
 
 def get_color_for_id(track_id: int):
-    """Deterministic color generation per ID."""
-    np.random.seed(track_id)
-    return np.random.uniform(0.4, 1.0, size=3).tolist()
+    """
+    Deterministic high-contrast color per ID.
+    Explicitly avoids green hues to prevent conflict
+    with green point cloud.
+    """
+    palette = [
+        [1.0, 0.2, 0.2],   # red
+        [1.0, 1.0, 0.2],   # yellow
+        [0.2, 1.0, 1.0],   # cyan
+        [1.0, 0.2, 1.0],   # magenta
+        [1.0, 0.6, 0.2],   # orange
+        [0.6, 0.6, 1.0],   # light blue
+    ]
+    return palette[track_id % len(palette)]
 
 
 def get_user_choice():
@@ -79,7 +89,6 @@ def create_marker(center, color):
 
 
 def project_to_screen(point_3d, intrinsic, extrinsic):
-    """Project 3D world coordinate to 2D pixel coordinate."""
     pt = np.append(point_3d, 1.0)
     cam = extrinsic @ pt
     if cam[2] <= 0:
@@ -102,7 +111,7 @@ def main():
     video_path = "tracking_playback.mp4"
 
     if not os.path.exists(json_path):
-        print(f"❌ tracking_results.json not found")
+        print("❌ tracking_results.json not found")
         return
 
     with open(json_path, "r") as f:
@@ -130,7 +139,7 @@ def main():
     vis.add_geometry(pcd)
 
     opt = vis.get_render_option()
-    opt.background_color = np.asarray([0, 0, 0])
+    opt.background_color = np.asarray([0.0, 0.0, 0.0])
     opt.point_size = 2.0
 
     video_writer = None
@@ -147,8 +156,9 @@ def main():
         except Exception:
             continue
 
+        # ---------- POINT CLOUD COLOR (GREEN) ----------
         pcd.points = new_pcd.points
-        pcd.paint_uniform_color([0.2, 0.2, 0.2])
+        pcd.paint_uniform_color([0.0, 0.75, 0.0])  # solid green
         vis.update_geometry(pcd)
 
         # Remove old overlays
@@ -158,7 +168,7 @@ def main():
 
         labels = []
 
-        # Draw tracked humans
+        # ---------- TRACKED OBJECTS ----------
         if frame_idx in tracking_by_frame:
             for det in tracking_by_frame[frame_idx]:
                 pos = det["position"]
@@ -186,7 +196,7 @@ def main():
             break
         vis.update_renderer()
 
-        # --- Capture Frame ---
+        # ---------- FRAME CAPTURE ----------
         image = np.asarray(vis.capture_screen_float_buffer(True))
         image = (image * 255).astype(np.uint8)
         image = cv2.cvtColor(image, cv2.COLOR_RGB2BGR)
@@ -203,7 +213,7 @@ def main():
         if (w, h) != (target_w, target_h):
             image = cv2.resize(image, (target_w, target_h))
 
-        # --- Project labels ---
+        # ---------- LABEL PROJECTION ----------
         vc = vis.get_view_control()
         cam = vc.convert_to_pinhole_camera_parameters()
         K = cam.intrinsic.intrinsic_matrix
@@ -215,9 +225,11 @@ def main():
                 x, y = pt2d
                 if 0 <= x < target_w and 0 <= y < target_h:
                     cv2.putText(image, label["text"], (x, y),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 2)
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                (0, 0, 0), 2)
                     cv2.putText(image, label["text"], (x, y),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, label["color"], 1)
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.5,
+                                label["color"], 1)
 
         video_writer.write(image)
 
