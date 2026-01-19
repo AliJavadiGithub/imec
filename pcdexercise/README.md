@@ -42,8 +42,6 @@ This project detects humans in LiDAR / depth-map point clouds, tracks them over 
 ├── tracking_results.json          # Generated tracking output
 └── tracking_playback.mp4          # Recorded playback video
 
-
-
 ```
 
 ## ⚙️ Requirements
@@ -223,18 +221,3 @@ make clean-all
 * Optimized for human-scale motion and geometry
 * Safe failure handling for corrupted or empty frames
 
----
-
-## 👤 Author
-
-Refactored and structured for clarity, robustness, and extensibility.
-
----
-
-## 📜 License
-
-Educational / research use.
-Adapt and extend freely with attribution.
-
-```
-```
