@@ -1,4 +1,3 @@
-```markdown
 # 3D Point Cloud Human Tracking
 
 Robust multi-object human tracking and visualization from 3D point cloud sequences.  
@@ -29,7 +28,7 @@ This project detects humans in LiDAR / depth-map point clouds, tracks them over 
 
 ## 📁 Project Structure
 
-```
+
 
 .
 ├── Makefile
@@ -44,6 +43,7 @@ This project detects humans in LiDAR / depth-map point clouds, tracks them over 
 └── tracking_playback.mp4          # Recorded playback video
 
 ````
+
 
 ---
 
@@ -69,7 +69,7 @@ Python packages (installed automatically):
 ```bash
 make venv
 source .venv/bin/activate
-````
+
 
 ### 2. Install Dependencies
 
