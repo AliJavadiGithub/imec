@@ -194,7 +194,7 @@ with $v_{\text{max}} = 3.0 \, \text{m/s}$.
 
 Estimated ground-plane trajectory of tracked humans:
 
-![Trajectory (Top-Down)](trajectory_top_down.png)
+![Trajectory (Top-Down)](trajectory.png)
 
 ---
 
@@ -202,7 +202,7 @@ Estimated ground-plane trajectory of tracked humans:
 
 Instantaneous speed over time:
 
-![Speed vs Time](speed_vs_time.png)
+![Speed vs Time](speed.png)
 
 ---
 
