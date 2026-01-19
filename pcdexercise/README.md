@@ -44,7 +44,7 @@ This project detects humans in LiDAR / depth-map point clouds, tracks them over 
 
 
 
----
+```
 
 ## ⚙️ Requirements
 
@@ -61,7 +61,7 @@ Python packages (installed via Makefile):
 - `filterpy`
 - `opencv-python`
 
----
+```
 
 ## 🚀 Quick Start
 
