@@ -40,10 +40,13 @@ Each track is modeled using an **Interacting Multiple Model (IMM) Kalman Filter*
 - Constant Velocity (CV) model
 - Random Walk (RW) model
 
+State vector:
+$$\mathbf{x} = [x, y, z, \dot{x}, \dot{y}, \dot{z}]^\top$$
+
 Key properties:
-- 6D state: position (x, y, z) + velocity (vx, vy, vz)
-- Adaptive time step (`dt`) computed from timestamps
-- Model probabilities updated dynamically
+- Adaptive time step $\Delta t$ computed from timestamps
+- Model transition probabilities updated dynamically
+- Combined posterior estimated from weighted model hypotheses
 
 This enables smooth tracking during motion while remaining stable during pauses.
 
@@ -58,19 +61,30 @@ Track-to-detection matching is solved using:
   - Shape similarity (20%)
 - **Hungarian algorithm** for optimal assignment
 
-Associations exceeding the gating threshold are rejected to prevent ID swaps.
+Association cost:
+$$C_{ij} = w_d \cdot \| \mathbf{p}_i - \mathbf{d}_j \| + w_s \cdot \| \mathbf{s}_i - \mathbf{s}_j \|$$
+
+where:
+- $\mathbf{p}$ = predicted position  
+- $\mathbf{d}$ = detection centroid  
+- $\mathbf{s}$ = shape descriptor  
+
+Associations exceeding the gating threshold are rejected.
 
 ---
 
 ### 4. Track Management & Re-Identification
 
 Tracks are classified as **dynamic** or **static** based on estimated speed:
-- Static tracks are retained longer when temporarily occluded
+$$v = \| \dot{\mathbf{p}} \|$$
+
+- Static tracks are retained longer during occlusion
 - Dynamic tracks are removed faster to prevent drift
 
-A lightweight **spatial re-identification** mechanism allows lost tracks to be recovered if a new detection appears close to the last known position.
+A lightweight **spatial re-identification** allows recovery if:
+$$\| \mathbf{p}_{\text{lost}} - \mathbf{p}_{\text{new}} \| < d_{\text{reID}}$$
 
-Only tracks with sufficient temporal support (`min_hits`) are reported.
+Only tracks with sufficient temporal support are reported.
 
 ---
 
@@ -100,19 +114,19 @@ Tracking results are saved in a stable JSON schema (`tracking_results.json`) and
 
 ### Variable Frame Rate
 **Challenge:** Irregular timestamps cause unstable velocity estimates.  
-**Solution:** Explicit timestamp parsing and dynamic `dt` handling in the Kalman filter.
+**Solution:** Explicit timestamp parsing and dynamic $\Delta t$ handling.
 
 ---
 
 ### Visualization Consistency
 **Challenge:** Open3D window resizing caused video corruption.  
-**Solution:** Resolution locking at first frame capture for stable video encoding.
+**Solution:** Resolution locking at first frame capture.
 
 ---
 
 ## Quantitative Results
 
-Evaluation was performed **without ground truth** using proxy metrics:
+Evaluation is performed **without ground truth** using proxy metrics derived from physical plausibility and temporal consistency.
 
 | Metric | Value |
 |------|------|
@@ -121,11 +135,56 @@ Evaluation was performed **without ground truth** using proxy metrics:
 | Velocity Smoothness | **298.7 m/s²** |
 | Velocity Plausibility | **0.899** |
 
-**Interpretation:**
-- The tracker successfully detects humans in all frames
-- ID switches are rare but present during fast motion or occlusion
-- Velocity remains mostly within human limits
-- High jerk indicates occasional measurement noise or missed detections
+---
+
+## Evaluation Metrics (Formulas)
+
+### 1. Track Completeness
+
+Fraction of frames with at least one valid detection:
+
+$$\text{Completeness} = \frac{\sum_{t=1}^{T} \mathbb{1}(|D_t| > 0)}{T}$$
+
+where:
+- $D_t$ = detections at frame $t$
+- $T$ = total number of frames
+
+---
+
+### 2. ID Consistency (Proxy)
+
+Measures trajectory continuity using inter-frame displacement:
+
+$$\text{ID Consistency} = \frac{1}{N-1} \sum_{i=1}^{N-1} \mathbb{1}(\| \mathbf{p}_{i+1} - \mathbf{p}_i \| < d_{\max})$$
+
+Large jumps indicate implicit ID switches.
+
+---
+
+### 3. Velocity Estimation
+
+Instantaneous speed:
+$$v_i = \frac{\| \mathbf{p}_{i+1} - \mathbf{p}_i \|}{t_{i+1} - t_i}$$
+
+---
+
+### 4. Velocity Smoothness (Mean Jerk)
+
+Measures temporal stability of motion:
+
+$$\text{Smoothness} = \frac{1}{N-2} \sum_{i=1}^{N-2} \left| \frac{v_{i+1} - v_i}{t_{i+2} - t_{i+1}} \right|$$
+
+Lower values indicate smoother motion.
+
+---
+
+### 5. Velocity Plausibility
+
+Fraction of speeds within human limits:
+
+$$\text{Plausibility} = \frac{1}{N} \sum_{i=1}^{N} \mathbb{1}(v_i \leq v_{\text{max}})$$
+
+with $v_{\text{max}} = 3.0 \, \text{m/s}$.
 
 ---
 
@@ -133,41 +192,41 @@ Evaluation was performed **without ground truth** using proxy metrics:
 
 ### Trajectory (Top-Down)
 
-The following plot shows the estimated **2D ground-plane trajectory** of tracked humans:
+Estimated ground-plane trajectory of tracked humans:
 
-![Trajectory (Top-Down)](trajectory.png)
+![Trajectory (Top-Down)](trajectory_top_down.png)
 
 ---
 
 ### Speed vs Time
 
-The plot below visualizes **instantaneous speed over time**, highlighting motion patterns and pauses:
+Instantaneous speed over time:
 
-![Speed vs Time](speed.png)
+![Speed vs Time](speed_vs_time.png)
 
 ---
 
 ## Limitations and Future Improvements
 
 ### Current Limitations
-- No explicit appearance or learned features
-- Limited re-identification robustness in crowded scenes
-- Shape descriptor is heuristic and scene-dependent
-- Vertical motion not explicitly constrained
+- No learned appearance or point-cloud embeddings
+- Re-identification limited in dense crowds
+- Shape descriptor is heuristic
+- Vertical dynamics not explicitly constrained
 
 ---
 
 ### Future Improvements
-- Learned point-cloud embeddings for Re-ID
+- Learned 3D embeddings for Re-ID
 - Joint Probabilistic Data Association (JPDA)
-- Adaptive gating based on covariance
+- Adaptive covariance-based gating
 - Multi-hypothesis track management
-- Ground-truth-based MOT metrics (MOTA, MOTP)
+- Ground-truth MOT metrics (MOTA, MOTP)
 - GPU-accelerated clustering and filtering
 
 ---
 
 ## Conclusion
 
-This system demonstrates that **robust human tracking in 3D point clouds is feasible without learning or labeled data**, using principled geometry, probabilistic filtering, and careful engineering.  
-The modular design allows seamless extension toward learning-based or large-scale multi-object scenarios.
+This work demonstrates that **robust 3D human tracking is achievable without learning or labeled data**, using principled geometry, probabilistic filtering, and careful engineering.  
+The modular design enables future integration of learning-based and large-scale multi-object tracking methods.
