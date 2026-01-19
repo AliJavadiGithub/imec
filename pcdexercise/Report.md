@@ -164,7 +164,7 @@ Large jumps indicate implicit ID switches.
 ### 3. Velocity Estimation
 
 Instantaneous speed:
-$$\text{v_i} = \frac{\| \mathbf{p}_{i+1} - \mathbf{p}_i \|}{t_{i+1} - t_i}$$
+$$v_{i} = \frac{\| \mathbf{p}_{i+1} - \mathbf{p}_i \|}{t_{i+1} - t_i}$$
 
 ---
 
