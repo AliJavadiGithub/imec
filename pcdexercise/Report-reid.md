@@ -3,7 +3,7 @@
 
 # REPORT.md — Point Cloud Human Tracking (pcdexercise)
 
-This report describes the final tracking pipeline implemented in `tracking.py` for the **pcdexercise** dataset (`mapHumanOnly/` and `mapAll/`). The goal is to maintain **consistent person IDs** over time and estimate **3D velocity** from timestamped point clouds.
+This report describes the final tracking pipeline implemented in `tracking-reid.py` for the **pcdexercise** dataset (`mapHumanOnly/` and `mapAll/`). The goal is to maintain **consistent person IDs** over time and estimate **3D velocity** from timestamped point clouds.
 
 ---
 
@@ -260,7 +260,7 @@ From the attached plots:
 Run tracking:
 
 ```bash
-python3 tracking.py
+python3 tracking-reid.py
 ```
 
 Playback visualization:
