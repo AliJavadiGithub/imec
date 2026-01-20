@@ -7,11 +7,10 @@ VENV_DIR := .venv
 PYTHON   := $(VENV_DIR)/bin/python
 PIP      := $(VENV_DIR)/bin/pip
 
-TRACKING_SCRIPT        := tracking-best.py
+TRACKING_SCRIPT        := tracking-reid.py
 PLAYBACK_SCRIPT        := tracking-playback.py
 VISUALIZATION_SCRIPT   := tracking-visualization.py
-EVALUATION_SCRIPT      := tracking-evaluate.py
-REFERENCE_SCRIPT       := Reference-extractor.py
+EVALUATION_SCRIPT      := tracking-evaluate-mot.py
 
 # ---- Default Target ----
 .PHONY: help
@@ -23,8 +22,7 @@ help:
 	@echo "  make track          - Run human tracking (generate JSON)"
 	@echo "  make playback       - Visualize tracking & record video"
 	@echo "  make visualize      - Plot trajectories & speed"
-	@echo "  make evaluate       - Run tracking evaluation metrics"
-	@echo "  make reference      - Extract human reference statistics"
+	@echo "  make evaluate       - Run multi-objecttracking evaluation metrics"
 	@echo "  make clean          - Remove generated cache files"
 	@echo "  make clean-venv     - Remove virtual environment"
 	@echo "  make clean-all      - Full cleanup"
@@ -87,16 +85,6 @@ evaluate:
 	fi
 	@echo "Evaluating tracking performance..."
 	@$(PYTHON) $(EVALUATION_SCRIPT)
-
-# ---- Reference Extraction ----
-.PHONY: reference
-reference:
-	@if [ ! -d "$(VENV_DIR)" ]; then \
-		echo "Virtual environment not found. Run 'make install' first."; \
-		exit 1; \
-	fi
-	@echo "Extracting reference human statistics..."
-	@$(PYTHON) $(REFERENCE_SCRIPT)
 
 # ---- Clean Cache Files ----
 .PHONY: clean
