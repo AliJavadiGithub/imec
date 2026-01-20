@@ -7,7 +7,7 @@ VENV_DIR := .venv
 PYTHON   := $(VENV_DIR)/bin/python
 PIP      := $(VENV_DIR)/bin/pip
 
-TRACKING_SCRIPT        := tracking-best.py
+TRACKING_SCRIPT        := tracking.py
 PLAYBACK_SCRIPT        := tracking-playback.py
 VISUALIZATION_SCRIPT   := tracking-visualization.py
 EVALUATION_SCRIPT      := tracking-evaluate.py
