@@ -1,4 +1,3 @@
-
 # 3D Point Cloud Human Tracking
 
 Robust **multi-human tracking** from 3D point cloud sequences with strong suppression of static clutter.
@@ -44,7 +43,7 @@ This project detects human-like clusters in LiDAR / depth-map point clouds, trac
 
 * Two-stage association:
 
-  1. Mahalanobis-distance gating + Hungarian assignment (motion-consistent)
+  1. Mahalanobis-distance gating + Hungarian assignment
   2. Appearance refinement for ambiguous cases
 * Lightweight ReID cues (no training required):
 
@@ -60,7 +59,7 @@ This project detects human-like clusters in LiDAR / depth-map point clouds, trac
 * Temporal **motion-confirmation gate**:
 
   * Tracks must accumulate sufficient displacement (≈ 0.9 m over ~2 s)
-  * OR sustain a minimum speed (≥ 0.20 m/s)
+  * **OR** sustain a minimum speed (≥ 0.20 m/s)
 * Moving-evidence counter:
 
   * Track must be “moving” for several frames before being emitted
@@ -105,15 +104,15 @@ This project detects human-like clusters in LiDAR / depth-map point clouds, trac
 .
 ├── Makefile
 ├── tracking-reid.py                    # Core detection + multi-human tracking
-├── tracking-playback.py                # 3D playback + video recording
-├── tracking-visualization.py           # Trajectory & speed plots
-├── tracking-evaluate.py                # Single-human proxy evaluation
-├── tracking-evaluate-mot.py            # Multi-human MOT evaluation (no GT)
-├── reference_extractor.py              # Human size/speed statistics extraction
-├── mapHumanOnly/                       # Human-only point clouds
-├── mapAll/                             # Full environment point clouds
-├── tracking_results.json               # Generated tracking output
-└── tracking_playback.mp4               # Recorded playback video
+├── tracking-playback.py           # 3D playback + video recording
+├── tracking-visualization.py      # Trajectory & speed plots
+├── tracking-evaluate.py           # Single-human proxy evaluation
+├── tracking-evaluate-mot.py       # Multi-human MOT evaluation (no GT)
+├── reference_extractor.py         # Human size/speed statistics extraction
+├── mapHumanOnly/                  # Human-only point clouds
+├── mapAll/                        # Full environment point clouds
+├── tracking_results.json          # Generated tracking output
+└── tracking_playback.mp4          # Recorded playback video
 ```
 
 ---
@@ -123,7 +122,7 @@ This project detects human-like clusters in LiDAR / depth-map point clouds, trac
 * Python **3.8+**
 * System dependencies for **Open3D** and **OpenCV**
 
-Python packages (installed via Makefile):
+Core Python packages (installed via Makefile):
 
 * `open3d`
 * `numpy`
@@ -152,10 +151,20 @@ source .venv/bin/activate
 
 ---
 
-### 2. Install Dependencies
+### 2. Install Core Dependencies
 
 ```bash
 make install
+```
+
+---
+
+### 3. (Optional) Install ReID Dependencies
+
+Only required if you want CLIP-based appearance ReID:
+
+```bash
+make install-reid
 ```
 
 ---
@@ -165,10 +174,10 @@ make install
 Run the tracker on a dataset:
 
 ```bash
-python tracking-reid.py
+make track
 ```
 
-Choose:
+You will be prompted to choose:
 
 * **[1] Human Only** → `mapHumanOnly`
 * **[2] Entire Map** → `mapAll`
@@ -195,7 +204,7 @@ Each detection contains:
 Visualize tracking results and record an annotated video:
 
 ```bash
-python tracking-playback.py
+make playback
 ```
 
 Output:
@@ -218,7 +227,7 @@ Features:
 Plot trajectories and speed over time:
 
 ```bash
-python tracking-visualization.py
+make visualize
 ```
 
 Produces:
@@ -233,7 +242,7 @@ Produces:
 ### Multi-Human MOT Evaluation
 
 ```bash
-python tracking-evaluate-mot.py
+make evaluate
 ```
 
 Metrics include:
@@ -253,7 +262,6 @@ python tracking-evaluate.py
 ```
 
 ---
-
 
 ## 🧪 Output Format (`tracking_results.json`)
 
@@ -283,3 +291,4 @@ python tracking-evaluate.py
 * Strong suppression of static false positives
 * Stable ID assignment for multiple humans
 * Safe handling of empty or corrupted frames
+
