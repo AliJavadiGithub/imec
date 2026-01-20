@@ -4,12 +4,12 @@ tracking.py
 Robust multi-object human tracking in 3D point clouds.
 
 Off-the-shelf "SOTA-ish" improvements (no training, sensor-agnostic):
-- Detection: voxel downsample + (optional) plane removal + DBSCAN + geometry checks
+- Detection: voxel downsample + (optional) plane removal + DBSCAN + geometry validation (+ PCA verticality)
 - Tracking: IMM with proper CV + RW models, dt-aware, physically consistent Q
 - Association: two-stage (Mahalanobis Hungarian + appearance refinement)
 - Re-ID: CLIP multi-view projection embeddings + Open3D FPFH descriptor
 - Track-level embedding gallery (EMA + short-term buffer)
-- NEW: velocity smoothing (One Euro) + measurement EMA + plausibility clamp
+- Velocity: measurement EMA + One Euro smoothing + plausibility clamp
 - Output: tracking_results.json (same schema)
 
 Notes:
@@ -27,6 +27,7 @@ from filterpy.kalman import KalmanFilter, IMMEstimator
 
 o3d.utility.set_verbosity_level(o3d.utility.VerbosityLevel.Error)
 
+
 # =========================
 # Utility
 # =========================
@@ -37,9 +38,11 @@ def extract_timestamp_ms(filename: str) -> int:
         raise ValueError(f"Invalid filename timestamp: {filename}")
     return int(m.group(1))
 
+
 def l2_normalize(x: np.ndarray, eps: float = 1e-12) -> np.ndarray:
     n = float(np.linalg.norm(x) + eps)
     return (x / n).astype(np.float32)
+
 
 def cosine_distance(a: np.ndarray, b: np.ndarray, eps: float = 1e-12) -> float:
     a = a.astype(np.float32)
@@ -48,11 +51,13 @@ def cosine_distance(a: np.ndarray, b: np.ndarray, eps: float = 1e-12) -> float:
     db = float(np.linalg.norm(b) + eps)
     return float(1.0 - float(np.dot(a, b)) / (da * db))
 
+
 def safe_det_3x3(M: np.ndarray, eps: float = 1e-12) -> float:
     try:
         return float(np.linalg.det(M) + eps)
     except Exception:
         return eps
+
 
 def clamp_norm(v: np.ndarray, max_norm: float) -> np.ndarray:
     n = float(np.linalg.norm(v))
@@ -60,33 +65,33 @@ def clamp_norm(v: np.ndarray, max_norm: float) -> np.ndarray:
         return v
     return (v / n) * max_norm
 
+
 # =========================
-# One Euro Filter (SOTA-ish smoothing for unknown sensors)
+# One Euro Filter
 # =========================
 
 class OneEuroFilter:
     """
-    One Euro filter for smoothing signals with adaptive cutoff.
-    Great for removing jitter while preserving responsiveness.
+    Adaptive low-pass filter for jittery signals.
+    Good for velocity smoothing when sensor characteristics are unknown.
     """
     def __init__(self, min_cutoff=1.0, beta=0.02, d_cutoff=1.0):
         self.min_cutoff = float(min_cutoff)
         self.beta = float(beta)
         self.d_cutoff = float(d_cutoff)
-
         self.x_prev = None
         self.dx_prev = None
 
     @staticmethod
     def _alpha(cutoff: float, dt: float) -> float:
-        # alpha = 1 / (1 + tau/dt), tau = 1/(2*pi*cutoff)
         if dt <= 0:
             return 1.0
         tau = 1.0 / (2.0 * np.pi * cutoff)
         return 1.0 / (1.0 + tau / dt)
 
-    def _exp_smooth(self, a: float, x: np.ndarray, x_prev: np.ndarray) -> np.ndarray:
-        return (a * x + (1.0 - a) * x_prev)
+    @staticmethod
+    def _exp_smooth(a: float, x: np.ndarray, x_prev: np.ndarray) -> np.ndarray:
+        return a * x + (1.0 - a) * x_prev
 
     def filter(self, x: np.ndarray, dt: float) -> np.ndarray:
         x = x.astype(np.float32)
@@ -96,17 +101,13 @@ class OneEuroFilter:
             self.dx_prev = np.zeros_like(x, dtype=np.float32)
             return x
 
-        # derivative
         dx = (x - self.x_prev) / max(dt, 1e-6)
 
-        # smooth derivative
         a_d = self._alpha(self.d_cutoff, dt)
         dx_hat = self._exp_smooth(a_d, dx, self.dx_prev)
 
-        # adaptive cutoff
         cutoff = self.min_cutoff + self.beta * float(np.linalg.norm(dx_hat))
 
-        # smooth signal
         a = self._alpha(cutoff, dt)
         x_hat = self._exp_smooth(a, x, self.x_prev)
 
@@ -114,11 +115,16 @@ class OneEuroFilter:
         self.dx_prev = dx_hat.copy()
         return x_hat
 
+
 # =========================
 # Learned ReID Embeddings (CLIP projections)
 # =========================
 
 class ClipReIDEmbedder:
+    """
+    Off-the-shelf embedding for a 3D cluster using CLIP image encoder.
+    Renders multi-view orthographic maps (depth + density + height mask).
+    """
     def __init__(
         self,
         enabled: bool = True,
@@ -161,6 +167,7 @@ class ClipReIDEmbedder:
             self._model = model
             self._preprocess = preprocess
             self._ok = True
+
             print(f"✅ ReID enabled: CLIP {model_name} ({pretrained}) on {self._device}")
 
         except Exception as e:
@@ -196,6 +203,7 @@ class ClipReIDEmbedder:
 
     def _render_maps(self, pts: np.ndarray) -> np.ndarray:
         H = W = self.image_size
+
         x = np.clip(pts[:, 0], -self.xy_clip, self.xy_clip)
         y = np.clip(pts[:, 1], -self.xy_clip, self.xy_clip)
         z = np.clip(pts[:, 2], self.z_clip[0], self.z_clip[1])
@@ -252,6 +260,7 @@ class ClipReIDEmbedder:
 
         pts = self._sample_points(pts)
         pts = self._normalize_cluster(pts)
+
         angles = np.linspace(0, 2 * np.pi, num=self.n_views, endpoint=False)
 
         import torch
@@ -273,6 +282,7 @@ class ClipReIDEmbedder:
 
         emb = np.mean(np.stack(embs, axis=0), axis=0).astype(np.float32)
         return l2_normalize(emb)
+
 
 # =========================
 # 3D Geometry Descriptor (FPFH)
@@ -309,22 +319,36 @@ class FPFHDescriptor:
         except Exception:
             return None
 
+
 # =========================
 # Detection
 # =========================
 
 class HumanDetector:
+    """Detects human-like clusters from a point cloud."""
     def __init__(self):
+        # Preprocess
         self.voxel_size = 0.07
         self.remove_ground = True
 
-        self.dbscan_eps = 0.45
-        self.dbscan_min_points = 8
+        # DBSCAN (tightened per your request)
+        self.dbscan_eps = 0.50
+        self.dbscan_min_points = 12
 
+        # geometry constraints
         self.min_height = 0.5
         self.max_height = 2.3
         self.max_width = 1.2
         self.min_density = 2.0
+
+    # ---- NEW: PCA verticality ----
+    def verticality_score(self, pts: np.ndarray) -> float:
+        X = pts - pts.mean(axis=0, keepdims=True)
+        C = np.cov(X.T)
+        w, V = np.linalg.eigh(C)  # ascending
+        v = V[:, np.argmax(w)]
+        v = v / (np.linalg.norm(v) + 1e-12)
+        return float(abs(v[2]))
 
     def extract_shape_descriptor(self, cluster: o3d.geometry.PointCloud) -> np.ndarray:
         pts = np.asarray(cluster.points)
@@ -338,7 +362,7 @@ class HumanDetector:
 
         height = ext[2]
         width = max(ext[0], ext[1])
-        aspect_hw = height / width
+        aspect_hw = height / (width + 1e-6)
         density = float(pts.shape[0] / np.prod(ext))
         top_frac = float(np.mean(pts[:, 2] > np.percentile(pts[:, 2], 80)))
 
@@ -347,9 +371,10 @@ class HumanDetector:
             dtype=np.float32
         )
 
+    # ---- MODIFIED: stronger human geometry w/ verticality ----
     def is_valid_human_geometry(self, cluster: o3d.geometry.PointCloud) -> bool:
         pts = np.asarray(cluster.points)
-        if pts.shape[0] < 30:
+        if pts.shape[0] < 40:
             return False
 
         bbox = cluster.get_axis_aligned_bounding_box()
@@ -364,6 +389,15 @@ class HumanDetector:
             return False
         if density < self.min_density:
             return False
+
+        aspect_hw = height / (width + 1e-6)
+        if aspect_hw < 1.2:
+            return False
+
+        vert = self.verticality_score(pts)
+        if vert < 0.75:
+            return False
+
         return True
 
     def _preprocess(self, pcd: o3d.geometry.PointCloud) -> o3d.geometry.PointCloud:
@@ -394,6 +428,7 @@ class HumanDetector:
         return p
 
     def detect(self, pcd: o3d.geometry.PointCloud) -> List[Dict]:
+        """Returns detections: {centroid, shape, cluster}"""
         p = self._preprocess(pcd)
         if p.is_empty() or len(p.points) < 30:
             return []
@@ -411,7 +446,9 @@ class HumanDetector:
                     "shape": self.extract_shape_descriptor(cluster),
                     "cluster": cluster
                 })
+
         return detections
+
 
 # =========================
 # Motion Model (IMM: CV + RW)
@@ -431,15 +468,10 @@ def build_cv_kf(initial_pos: np.ndarray, dt: float) -> KalmanFilter:
     kf.x = np.zeros((6, 1), dtype=np.float32)
     kf.x[:3, 0] = initial_pos.astype(np.float32)
 
-    # smoother defaults than before
     kf.P = np.eye(6, dtype=np.float32) * 3.0
-
-    # IMPORTANT: higher R -> smoother velocities (less jitter injection)
-    # unknown sensor => keep somewhat conservative
     kf.R = np.eye(3, dtype=np.float32) * 0.60
 
-    # process noise (slightly lower than before)
-    q = 1.2  # accel std
+    q = 1.2
     dt2 = dt * dt
     dt3 = dt2 * dt
     dt4 = dt2 * dt2
@@ -458,11 +490,13 @@ def build_cv_kf(initial_pos: np.ndarray, dt: float) -> KalmanFilter:
     kf.Q = Q
     return kf
 
+
 def build_rw_kf(initial_pos: np.ndarray, dt: float) -> KalmanFilter:
     kf = build_cv_kf(initial_pos, dt)
     kf.Q *= 3.5
     kf.R *= 1.2
     return kf
+
 
 def build_imm_filter(initial_pos: np.ndarray, dt: float) -> IMMEstimator:
     kf_cv = build_cv_kf(initial_pos, dt)
@@ -471,7 +505,9 @@ def build_imm_filter(initial_pos: np.ndarray, dt: float) -> IMMEstimator:
     mu = np.array([0.75, 0.25], dtype=np.float32)
     trans = np.array([[0.975, 0.025],
                       [0.060, 0.940]], dtype=np.float32)
+
     return IMMEstimator([kf_cv, kf_rw], mu, trans)
+
 
 # =========================
 # Track
@@ -486,7 +522,6 @@ class Track:
         emb: Optional[np.ndarray],
         fpfh: Optional[np.ndarray],
         init_dt: float,
-        # smoothing params
         meas_alpha: float = 0.35,
         max_speed: float = 3.5,
     ):
@@ -514,17 +549,13 @@ class Track:
         self.last_seen_pos = centroid.astype(np.float32)
         self.is_static = False
 
-        # --- NEW: measurement EMA to reduce centroid jitter ---
         self.meas_alpha = float(meas_alpha)
         self.meas_ema = centroid.astype(np.float32)
 
-        # --- NEW: velocity smoothing (One Euro) ---
         self.vel_filter = OneEuroFilter(min_cutoff=1.0, beta=0.03, d_cutoff=1.0)
         self.speed_filter = OneEuroFilter(min_cutoff=1.0, beta=0.02, d_cutoff=1.0)
 
-        # --- NEW: plausibility clamp ---
         self.max_speed = float(max_speed)
-
         self._vel_smoothed = np.zeros(3, dtype=np.float32)
         self._speed_smoothed = 0.0
 
@@ -560,7 +591,6 @@ class Track:
         centroid = centroid.astype(np.float32)
         shape = shape.astype(np.float32)
 
-        # --- NEW: smooth the measurement BEFORE injecting into KF ---
         self.meas_ema = (1.0 - self.meas_alpha) * self.meas_ema + self.meas_alpha * centroid
         z = self.meas_ema
 
@@ -586,7 +616,6 @@ class Track:
         self.skipped_frames = 0
         self.hits += 1
 
-        # --- NEW: smooth velocity output + clamp ---
         v = self.velocity_raw()
         v = clamp_norm(v, self.max_speed)
         v_s = self.vel_filter.filter(v, dt)
@@ -608,7 +637,6 @@ class Track:
         return self.kf.x[3:].flatten().astype(np.float32)
 
     def velocity(self) -> np.ndarray:
-        # return smoothed velocity (better for evaluation)
         return self._vel_smoothed.astype(np.float32)
 
     def speed(self) -> float:
@@ -621,6 +649,7 @@ class Track:
         P = self.covariance_pos()
         unc = np.sqrt(max(safe_det_3x3(P, eps), eps))
         return float(np.clip(np.exp(-unc / p_max), 0.0, 1.0))
+
 
 # =========================
 # Tracker
@@ -660,7 +689,6 @@ class HumanTrackerMOT:
         self.reid_clip_max = 0.35
         self.reid_fpfh_max = 0.55
 
-        # NEW: global plausibility limit (unknown sensor)
         self.max_human_speed = 3.5
 
     def _compute_det_features(self, det: Dict):
@@ -680,7 +708,7 @@ class HumanTrackerMOT:
     def _mahalanobis(self, track: Track, z: np.ndarray) -> float:
         x = track.position()
         P = track.covariance_pos()
-        R = np.eye(3, dtype=np.float32) * 0.60  # match KF R
+        R = np.eye(3, dtype=np.float32) * 0.60
 
         v = (z.astype(np.float32) - x).reshape(3, 1)
         S = P + R
@@ -768,6 +796,7 @@ class HumanTrackerMOT:
                 ti = unmatched_tracks[r]
                 dj = unmatched_dets[c]
                 matches[ti] = dj
+
         return matches
 
     def _try_reid_from_lost(self, det: Dict) -> Optional[Track]:
@@ -814,19 +843,16 @@ class HumanTrackerMOT:
         prev_ts = self.history[-1]["timestamp_ms"] if self.history else (timestamp_ms - 33)
         dt = max((timestamp_ms - prev_ts) / 1000.0, 1e-3)
 
-        # predict all tracks
         for t in self.tracks:
             t.predict(dt)
 
-        # compute features once
         for d in detections:
             self._compute_det_features(d)
 
-        stage1_matches, _used = self._stage1_motion_assignment(detections)
+        stage1_matches, _ = self._stage1_motion_assignment(detections)
         matches = self._refine_with_appearance(detections, stage1_matches)
         used = set(matches.values())
 
-        # update matched tracks
         for ti, di in matches.items():
             d = detections[di]
             self.tracks[ti].update(
@@ -837,13 +863,11 @@ class HumanTrackerMOT:
                 dt=dt
             )
 
-        # manage skipped
         active = []
         for i, t in enumerate(self.tracks):
             if i not in matches:
                 t.skipped_frames += 1
 
-            # use smoothed speed if available; else raw
             sp = float(np.linalg.norm(t.velocity()))
             t.is_static = sp < 0.12
 
@@ -855,7 +879,6 @@ class HumanTrackerMOT:
 
         self.tracks = active
 
-        # create/re-id new tracks
         for j, d in enumerate(detections):
             if j in used:
                 continue
@@ -868,7 +891,6 @@ class HumanTrackerMOT:
                 self.tracks.append(lt)
                 self.lost_tracks.remove(lt)
             else:
-                # new track starts with measurement EMA and Euro filters initialized
                 self.tracks.append(
                     Track(
                         self.next_id,
@@ -883,13 +905,12 @@ class HumanTrackerMOT:
                 )
                 self.next_id += 1
 
-        # output results (schema unchanged)
         results = []
         for t in self.tracks:
             if t.skipped_frames == 0 and t.hits >= self.min_hits:
                 pos = t.position()
-                vel = t.velocity()          # smoothed velocity now
-                sp = t.speed()              # smoothed speed now
+                vel = t.velocity()
+                sp = t.speed()
                 results.append({
                     "id": t.id,
                     "position": [round(float(p), 3) for p in pos],
@@ -924,6 +945,7 @@ class HumanTrackerMOT:
 
         print(f"✅ Tracking Finished. Results in {output}")
 
+
 # =========================
 # CLI
 # =========================
@@ -936,6 +958,7 @@ def get_user_choice():
             return "mapHumanOnly"
         if c == "2":
             return "mapAll"
+
 
 def main():
     tracker = HumanTrackerMOT()
@@ -955,6 +978,7 @@ def main():
             print(f"Processing frame {i}/{len(files)}")
 
     tracker.finalize_results()
+
 
 if __name__ == "__main__":
     main()
