@@ -1,198 +1,234 @@
-# Robust 3D Human Tracking in Point Clouds
-
-## Overview
-
-This project implements a **robust multi-object human tracking system in 3D point clouds** using geometric detection, probabilistic motion modeling, and temporal data association.  
-The system operates entirely without ground-truth labels and is designed for real-world LiDAR-style point cloud sequences.
-
-The pipeline consists of:
-- Human detection from raw point clouds
-- Multi-model Kalman filtering for motion estimation
-- Optimal data association using Hungarian assignment
-- Lightweight re-identification and track management
-- Visualization, evaluation, and playback tools
 
 ---
 
-## Algorithm Description
+# REPORT.md — Point Cloud Human Tracking (pcdexercise)
 
-### 1. Human Detection
-
-Human candidates are detected using **DBSCAN clustering** applied to the input point cloud after noise removal and ground-plane segmentation.
-
-Each cluster is validated using **human-specific geometric constraints**:
-- Height range: 0.4–2.2 m  
-- Maximum width: ≤ 1.0 m  
-- Minimum spatial density  
-
-For valid clusters, a **shape descriptor** is extracted:
-- Vertical aspect ratio
-- Upper-body (head) density
-- Variance in horizontal and vertical axes  
-
-These descriptors are later used for association and identity stability.
+This report describes the final tracking pipeline implemented in `tracking-reid.py` for the **pcdexercise** dataset (`mapHumanOnly/` and `mapAll/`). The goal is to maintain **consistent person IDs** over time and estimate **3D velocity** from timestamped point clouds.
 
 ---
 
-### 2. Motion Modeling (IMM Kalman Filter)
+## 1) Algorithm description
 
-Each track is modeled using an **Interacting Multiple Model (IMM) Kalman Filter** consisting of:
-- Constant Velocity (CV) model
-- Random Walk (RW) model
+### Overview
+
+The solution is a **multi-object tracking (MOT)** pipeline specialized for 3D point clouds:
+
+1. Preprocess point cloud
+2. Detect candidate human clusters
+3. Track candidates over time using an IMM (CV + RW)
+4. Associate detections to tracks using gating + Hungarian assignment
+5. Re-identify lost tracks
+6. Suppress static clutter using temporal motion confirmation
+7. Output per-frame detections with position + velocity + confidence
+
+The output schema remains unchanged:
+
+```json
+{
+  "frame_id": int,
+  "timestamp_ms": int,
+  "detections": [
+    {
+      "id": int,
+      "position": [x,y,z],
+      "velocity": [vx,vy,vz],
+      "speed": float,
+      "status": "STATIC"|"MOVING",
+      "confidence": float
+    }
+  ]
+}
+```
+
+---
+
+### 1.1 Detection (DBSCAN + strong human geometry constraints)
+
+Each frame is processed as follows:
+
+* **Voxel downsampling** to reduce noise and normalize sensor density variations
+* **Statistical outlier removal** to remove isolated points
+* **Optional ground plane removal** using RANSAC plane segmentation
+* **DBSCAN clustering** on the remaining points
+
+Each cluster is validated using geometry checks:
+
+* Height range: `min_height ≤ height ≤ max_height`
+* Max width: `width ≤ max_width`
+* Density: `points / volume ≥ min_density`
+
+To reduce false positives from the environment (e.g., poles/walls), a stronger “human-ness” constraint is used:
+
+* **Aspect ratio constraint**: `height / width ≥ 1.4`
+* **PCA verticality score**: require the cluster’s principal axis to be upright
+  (verticality = alignment with Z axis), `verticality ≥ 0.85`
+* **Minimum number of points**: `≥ 60`
+
+This significantly reduces “human-like” static structures in `mapAll`.
+
+---
+
+### 1.2 Tracking (IMM Kalman Filter: CV + RW)
+
+Each track uses an **Interacting Multiple Model (IMM)** filter with two models:
+
+* **CV (Constant Velocity)**: smooth motion assumption
+* **RW (Random Walk-ish)**: handles stop-and-go or jitter
 
 State vector:
-$$\mathbf{x} = [x, y, z, \dot{x}, \dot{y}, \dot{z}]^\top$$
 
-Key properties:
-- Adaptive time step $\Delta t$ computed from timestamps
-- Model transition probabilities updated dynamically
-- Combined posterior estimated from weighted model hypotheses
 
-This enables smooth tracking during motion while remaining stable during pauses.
+x = [ p_x, p_y, p_z, v_x, v_y, v_z ]^T
 
----
 
-### 3. Data Association
 
-Track-to-detection matching is solved using:
-- **Gating** based on Euclidean distance
-- **Cost matrix** combining:
-  - Spatial distance (80%)
-  - Shape similarity (20%)
-- **Hungarian algorithm** for optimal assignment
-
-Association cost:
-$$C_{ij} = w_d \cdot \| \mathbf{p}_i - \mathbf{d}_j \| + w_s \cdot \| \mathbf{s}_i - \mathbf{s}_j \|$$
-
-where:
-- $\mathbf{p}$ = predicted position  
-- $\mathbf{d}$ = detection centroid  
-- $\mathbf{s}$ = shape descriptor  
-
-Associations exceeding the gating threshold are rejected.
+The filter is **dt-aware** using timestamps extracted from filenames (`*_1234ms.pcd`), and the process noise (Q) is built from a continuous white-noise acceleration model.
 
 ---
 
-### 4. Track Management & Re-Identification
+### 1.3 Data association (Mahalanobis gating + Hungarian, then appearance refinement)
 
-Tracks are classified as **dynamic** or **static** based on estimated speed:
-$$v = \| \dot{\mathbf{p}} \|$$
+Association is performed in two stages:
 
-- Static tracks are retained longer during occlusion
-- Dynamic tracks are removed faster to prevent drift
+**Stage 1: motion-only assignment**
 
-A lightweight **spatial re-identification** allows recovery if:
-$$| \mathbf{p}\_{\text{lost}} - \mathbf{p}\_{\text{new}} | < d\_{\text{reID}}$$
+* Compute **Mahalanobis distance** between predicted track position and detection centroid
+* Gate using a chi-square-inspired threshold (3D gate)
+* Run **Hungarian assignment** on the gated cost matrix
 
-Only tracks with sufficient temporal support are reported.
+**Stage 2: appearance refinement (only for still-ambiguous pairs)**
+A secondary Hungarian step can use a weighted combination of:
 
----
+* Euclidean distance (bounded)
+* Shape descriptor distance
+* **CLIP multi-view projection embedding cosine distance**
+* **FPFH descriptor cosine distance**
 
-### 5. Output & Visualization
-
-Tracking results are saved in a stable JSON schema (`tracking_results.json`) and used for:
-- Real-time 3D playback with Open3D
-- Annotated MP4 video generation
-- Trajectory and speed plotting
-- Quantitative evaluation without ground truth
+This is “SOTA-ish” for a *no-training* setting: true SOTA 3D ReID typically requires task-specific training.
 
 ---
 
-## Implementation Challenges and Solutions
+### 1.4 Re-identification (lost track recovery)
 
-### Ground Plane & Noise Sensitivity
-**Challenge:** Raw point clouds contain heavy noise and ground clutter.  
-**Solution:** Statistical outlier removal followed by RANSAC plane segmentation.
+Tracks that exceed their skip limit are moved to a `lost_tracks` pool.
 
----
+When a new detection appears, the tracker attempts re-ID using:
 
-### Identity Stability Without Appearance Features
-**Challenge:** No RGB or appearance embeddings available.  
-**Solution:** Shape descriptors + IMM-predicted motion + gating-based association.
+* spatial proximity to last known position
+* CLIP and/or FPFH similarity (when available)
 
----
-
-### Variable Frame Rate
-**Challenge:** Irregular timestamps cause unstable velocity estimates.  
-**Solution:** Explicit timestamp parsing and dynamic $\Delta t$ handling.
+If matched, the lost track is revived and keeps its original ID.
 
 ---
 
-### Visualization Consistency
-**Challenge:** Open3D window resizing caused video corruption.  
-**Solution:** Resolution locking at first frame capture.
+### 1.5 Velocity estimation and smoothing
+
+Velocity is estimated from the filter state, but raw Kalman velocities can be noisy.
+To stabilize velocity without introducing heavy lag, the implementation uses:
+
+* **measurement EMA** on position updates (reduces centroid jitter)
+* **One Euro filter** on velocity magnitude and vector (smooth but responsive)
+* speed is computed as (|v|)
 
 ---
 
-## Quantitative Results
+### 1.6 Temporal motion confirmation gate (key improvement for mapAll)
 
-Evaluation is performed **without ground truth** using proxy metrics derived from physical plausibility and temporal consistency.
+Even with strong geometry constraints, occupancy-map clutter can produce occasional “human-ish” clusters.
 
-| Metric | Value |
-|------|------|
-| Track Completeness | **1.000** |
-| ID Consistency (Proxy) | **0.903** |
-| Velocity Smoothness | **298.7 m/s²** |
-| Velocity Plausibility | **0.899** |
+To suppress these, tracks are only **emitted to the output** if they show evidence of actual motion:
 
----
+* Each `Track` keeps a short position history (`deque(maxlen=60)` ≈ 2s)
+* Compute displacement over this recent window
+* Require either:
 
-## Evaluation Metrics (Formulas)
+  * displacement ≥ **0.9 m** over ~2s, **OR**
+  * smoothed speed ≥ **0.20 m/s**
+* Additionally require **moving evidence counter**:
 
-### 1. Track Completeness
+  * `moving_count` increments when speed > 0.18 m/s and must reach **≥ 8**
+  * prevents “wiggle noise tracks” from appearing in results
 
-Fraction of frames with at least one valid detection:
-
-$$\text{Completeness} = \frac{\sum_{t=1}^{T} \mathbb{1}(|D_t| > 0)}{T}$$
-
-where:
-- $D_t$ = detections at frame $t$
-- $T$ = total number of frames
+This gate reduces static false positives while preserving stable IDs.
 
 ---
 
-### 2. ID Consistency (Proxy)
+## 2) Implementation challenges and solutions
 
-Measures trajectory continuity using inter-frame displacement:
+### Challenge A — Static environment clutter in `mapAll` creates false tracks
 
-$$\text{ID Consistency} = \frac{1}{N-1} \sum_{i=1}^{N-1} \mathbb{1}(\| \mathbf{p}_{i+1} - \mathbf{p}_i \| < d_{\max})$$
+**Symptom:** many long-lived IDs that are not people (walls/pillars), visible in playback and trajectory plots.
 
-Large jumps indicate implicit ID switches.
+**Solution:**
 
----
-
-### 3. Velocity Estimation
-
-Instantaneous speed:
-$$v\_i = \frac{| \mathbf{p}\_{i+1} - \mathbf{p}\_i |}{t\_{i+1} - t\_i}$$
+* Add PCA **verticality score** + stricter aspect ratio + minimum points
+* Tighten DBSCAN parameters to reduce tiny junk clusters
+* Add **temporal motion confirmation gate** and **moving_count** requirement to ensure only truly moving objects are reported
 
 ---
 
-### 4. Velocity Smoothness (Mean Jerk)
+### Challenge B — Unknown sensor characteristics (density, noise, coordinate conventions)
 
-Measures temporal stability of motion:
+**Solution:**
 
-$$\text{Smoothness} = \frac{1}{N-2} \sum_{i=1}^{N-2} \left| \frac{v_{i+1} - v_i}{t_{i+2} - t_{i+1}} \right|$$
-
-Lower values indicate smoother motion.
-
----
-
-### 5. Velocity Plausibility
-
-Fraction of speeds within human limits:
-
-$$\text{Plausibility} = \frac{1}{N} \sum_{i=1}^{N} \mathbb{1}(v_i \leq v_{\text{max}})$$
-
-with $v_{\text{max}} = 3.0 \, \text{m/s}$.
+* Use **voxel downsampling** and **density thresholds** rather than absolute point counts alone
+* Use **dt from timestamps** rather than assuming constant FPS
+* Use robust gating (Mahalanobis) instead of pure Euclidean matching
 
 ---
 
-## Trajectory and Motion Analysis
+### Challenge C — Velocity spikes from noisy centroids / irregular frame timing
+
+**Solution:**
+
+* EMA smoothing of the measurement update before feeding the Kalman update
+* One Euro filtering of velocity and speed
+* Clamp velocity norms to a physically plausible maximum
+
+---
+
+### Challenge D — Multi-human crossings (identity stability)
+
+**Solution:**
+
+* IMM prediction + Mahalanobis gating stabilizes motion association
+* Appearance refinement (CLIP + FPFH) improves ID continuity during close interactions
+* Re-ID from lost tracks recovers IDs after temporary disappearance
+
+---
+
+## 3) Quantitative results (MOT, no ground truth)
+
+Using `tracking-evaluate-mot.py` on the final configuration:
+
+* **Track Completeness:** `1.000`
+* **Total Track IDs:** `9`
+* **Valid Track IDs (len ≥ 10):** `9`
+* **Fragmentation (short-track fraction):** `0.000`
+
+Track statistics:
+
+* **Mean Track Length:** `245.4 frames`
+* **Median Track Length:** `167.0 frames`
+* **Mean Track Duration:** `75.56 s`
+
+Consistency proxies:
+
+* **Mean Jump Rate (> 1.5m step):** `0.001`
+* **Median Jump Rate:** `0.000`
+
+Velocity quality proxies:
+
+* **Mean Velocity Smoothness:** `0.696 m/s²`
+* **Median Velocity Smoothness:** `0.411 m/s²`
+* **Mean Velocity Plausibility:** `1.000`
+* **Median Velocity Plausibility:** `1.000`
+
+### Visual evidence
 
 ### Trajectory (Top-Down)
 
-Estimated ground-plane trajectory of tracked humans:
+* **Top-Down trajectories** show 9 persistent track IDs with long continuous segments
 
 ![Trajectory (Top-Down)](trajectory.png)
 
@@ -200,33 +236,60 @@ Estimated ground-plane trajectory of tracked humans:
 
 ### Speed vs Time
 
-Instantaneous speed over time:
+* **Speed vs Time** curves remain mostly in plausible walking ranges with occasional peaks, but without frequent discontinuities
 
 ![Speed vs Time](speed.png)
 
 ---
 
-## Limitations and Future Improvements
+## 4) Limitations and future improvements
 
-### Current Limitations
-- No learned appearance or point-cloud embeddings
-- Re-identification limited in dense crowds
-- Shape descriptor is heuristic
-- Vertical dynamics not explicitly constrained
+### Limitations
 
----
-
-### Future Improvements
-- Learned 3D embeddings for Re-ID
-- Joint Probabilistic Data Association (JPDA)
-- Adaptive covariance-based gating
-- Multi-hypothesis track management
-- Ground-truth MOT metrics (MOTA, MOTP)
-- GPU-accelerated clustering and filtering
+* **No ground truth**: reported metrics are proxies (smoothness, jump rate), not true IDF1/MOTA/HOTA
+* **No learned 3D ReID training**: CLIP projection embeddings + FPFH are strong baselines, but not true SOTA for 3D ReID
+* **Parameter sensitivity**: DBSCAN and geometry thresholds are still dataset-dependent
+* **Static false positives can remain** if map structures move slightly or if the human motion is very slow
+* **Runtime cost**: CLIP embedding computation can be expensive (especially on CPU)
 
 ---
 
-## Conclusion
+### Future improvements
 
-This work demonstrates that **robust 3D human tracking is achievable without learning or labeled data**, using principled geometry, probabilistic filtering, and careful engineering.  
-The modular design enables future integration of learning-based and large-scale multi-object tracking methods.
+1. **Learned 3D ReID** (PointNet++ / DGCNN / Transformers)
+2. **Semantic classification** to reject non-human clusters
+3. **Advanced data association** (JPDA, MHT, tracklets)
+4. **Adaptive thresholding** based on density statistics
+5. **Ground-truth-based evaluation** (IDF1, MOTA, HOTA)
+6. **Map-aware static suppression** using long-term occupancy priors
+
+---
+
+## Reproducibility notes
+
+Run tracking:
+
+```bash
+python3 tracking-reid.py
+```
+
+Playback visualization:
+
+```bash
+python3 playback.py
+```
+
+Trajectory and speed plots:
+
+```bash
+python3 tracking-visualization.py
+```
+
+MOT-style evaluation (no GT):
+
+```bash
+python3 tracking-evaluate-mot.py
+```
+
+---
+
