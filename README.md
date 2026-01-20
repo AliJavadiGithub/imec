@@ -158,7 +158,7 @@ Metrics include:
 
 ## 📐 Reference Statistics Extraction
 
-Extract empirical human size and speed statistics from clean data:
+Extract empirical human size and speed statistics from mapHumanOnly:
 
 ```bash
 make reference
