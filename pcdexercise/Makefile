@@ -1,5 +1,5 @@
 # ==========================================
-# Makefile for Point Cloud Human Tracking
+# Makefile for 3D Point Cloud Human Tracking
 # ==========================================
 
 # ---- Variables ----
@@ -15,17 +15,18 @@ EVALUATION_SCRIPT      := tracking-evaluate-mot.py
 # ---- Default Target ----
 .PHONY: help
 help:
-	@echo "Point Cloud Human Tracking - Available Commands:"
+	@echo "3D Point Cloud Human Tracking - Available Commands:"
 	@echo ""
-	@echo "  make venv           - Create virtual environment"
-	@echo "  make install        - Install dependencies"
-	@echo "  make track          - Run human tracking (generate JSON)"
-	@echo "  make playback       - Visualize tracking & record video"
-	@echo "  make visualize      - Plot trajectories & speed"
-	@echo "  make evaluate       - Run multi-objecttracking evaluation metrics"
-	@echo "  make clean          - Remove generated cache files"
-	@echo "  make clean-venv     - Remove virtual environment"
-	@echo "  make clean-all      - Full cleanup"
+	@echo "  make venv            - Create virtual environment"
+	@echo "  make install         - Install core dependencies"
+	@echo "  make install-reid    - Install optional ReID (CLIP) dependencies"
+	@echo "  make track           - Run human tracking (generate JSON)"
+	@echo "  make playback        - Visualize tracking & record video"
+	@echo "  make visualize       - Plot trajectories & speed"
+	@echo "  make evaluate        - Run multi-human MOT evaluation"
+	@echo "  make clean           - Remove generated cache files"
+	@echo "  make clean-venv      - Remove virtual environment"
+	@echo "  make clean-all       - Full cleanup"
 	@echo ""
 
 # ---- Virtual Environment ----
@@ -37,13 +38,33 @@ venv:
 	@echo "Activate with: source $(VENV_DIR)/bin/activate"
 	@echo ""
 
-# ---- Install Dependencies ----
+# ---- Install Core Dependencies ----
 .PHONY: install
 install: venv
-	@echo "Installing dependencies..."
+	@echo "Installing core dependencies..."
 	$(PIP) install --upgrade pip
-	$(PIP) install open3d numpy scipy scikit-learn matplotlib filterpy opencv-python
-	@echo "Dependencies installed successfully!"
+	$(PIP) install \
+		open3d \
+		numpy \
+		scipy \
+		scikit-learn \
+		matplotlib \
+		filterpy \
+		opencv-python
+	@echo "Core dependencies installed successfully!"
+	@echo ""
+
+# ---- Install Optional ReID Dependencies (CLIP) ----
+.PHONY: install-reid
+install-reid:
+	@if [ ! -d "$(VENV_DIR)" ]; then \
+		echo "Virtual environment not found. Run 'make install' first."; \
+		exit 1; \
+	fi
+	@echo "Installing optional ReID (CLIP) dependencies..."
+	$(PIP) install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu
+	$(PIP) install open_clip_torch Pillow
+	@echo "Optional ReID dependencies installed!"
 	@echo ""
 
 # ---- Run Tracking ----
@@ -76,20 +97,20 @@ visualize:
 	@echo "Visualizing tracking results..."
 	@$(PYTHON) $(VISUALIZATION_SCRIPT)
 
-# ---- Evaluation Metrics ----
+# ---- Evaluation Metrics (Multi-Human MOT) ----
 .PHONY: evaluate
 evaluate:
 	@if [ ! -d "$(VENV_DIR)" ]; then \
 		echo "Virtual environment not found. Run 'make install' first."; \
 		exit 1; \
 	fi
-	@echo "Evaluating tracking performance..."
+	@echo "Evaluating multi-human tracking performance..."
 	@$(PYTHON) $(EVALUATION_SCRIPT)
 
 # ---- Clean Cache Files ----
 .PHONY: clean
 clean:
-	@echo "Cleaning generated files..."
+	@echo "Cleaning generated cache files..."
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete
 	find . -type f -name "*.pyo" -delete
