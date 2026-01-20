@@ -1,263 +1,223 @@
-# Human Tracking in Point Cloud Space
+# 3D Point Cloud Human Tracking
 
-## Overview
-
-This project implements a **robust 3D human tracking system** operating directly on sequential point cloud (`.pcd`) data.
-The system maintains **consistent human identity**, estimates **velocity**, and exports results for **quantitative and qualitative evaluation**, even **without ground-truth annotations**.
-
-The implementation satisfies all exercise requirements, including tracking, velocity estimation, visualization, and evaluation.
+Robust multi-object human tracking and visualization from 3D point cloud sequences.  
+This project detects humans in LiDAR / depth-map point clouds, tracks them over time using probabilistic motion models, and provides playback, visualization, and evaluation tools.
 
 ---
 
-## 1. Algorithm Description
+## ✨ Features
 
-The pipeline consists of **four main stages**:
-
-### 1.1 Preprocessing and Detection
-
-Each frame is processed independently:
-
-1. **Noise Removal**
-
-   * Statistical outlier removal
-   * `nb_neighbors = 20`, `std_ratio = 1.5`
-
-2. **Ground Plane Removal**
-
-   * RANSAC-based plane segmentation removes floor points
-
-3. **Clustering**
-
-   * DBSCAN clustering
-   * `eps = 0.5 m`, `min_points = 5`
-
-4. **Human Geometry Filtering**
-
-   * Height: `0.7 m < h < 2.1 m`
-   * Width / length < `1.0 m`
-   * Minimum point count threshold
-
-Each valid detection outputs:
-
-* 3D centroid
-* Geometric shape descriptor
+- **3D Human Detection**
+  - DBSCAN clustering on point clouds
+  - Geometry-based human validation
+- **Multi-Object Tracking (MOT)**
+  - IMM Kalman Filter (Constant Velocity + Random Walk)
+  - Hungarian assignment with gating
+  - Track lifecycle management (static vs dynamic)
+  - Lightweight re-identification
+- **Visualization & Playback**
+  - Open3D real-time playback
+  - Per-ID bounding boxes, markers, and labels
+  - Automatic MP4 video recording
+- **Analysis & Evaluation**
+  - Trajectory and speed plots
+  - Heuristic tracking quality metrics (no ground truth required)
+  - Reference statistic extraction from clean datasets
 
 ---
 
-### 1.2 Feature Extraction
+## 📁 Project Structure
 
-To support re-identification, a compact shape descriptor is computed per cluster:
+```
 
-* Height-to-width ratio
-* Upper-body (head) point density
-* Spatial variance in X and Z axes
+.
+├── Makefile
+├── tracking.py                    # Core human detection + multi-object tracking
+├── tracking-playback.py           # 3D playback + video recording
+├── tracking-visualization.py      # Trajectory & speed plots
+├── tracking-evaluate.py           # Quantitative tracking metrics (proxy)
+├── reference_extractor.py         # Human size/speed statistics extraction
+├── mapHumanOnly/                  # Point clouds with only humans
+├── mapAll/                        # Full environment point clouds
+├── tracking_results.json          # Generated tracking output
+└── tracking_playback.mp4          # Recorded playback video
 
-Descriptors are **temporally averaged** for stability.
+```
 
----
+## ⚙️ Requirements
 
-### 1.3 Multi-Object Tracking (MOT)
+- Python **3.8+**
+- System dependencies for **Open3D** and **OpenCV**
 
-Tracking follows a **Kalman Filter + Hungarian assignment** paradigm inspired by DeepSORT.
+Python packages (installed via Makefile):
 
-#### Kalman Filter Model
+- `open3d`
+- `numpy`
+- `scipy`
+- `scikit-learn`
+- `matplotlib`
+- `filterpy`
+- `opencv-python`
 
-* State: `[x, y, z, vx, vy, vz]`
-* Measurement: 3D centroid
-* Constant-velocity motion model
-* Time step derived from frame timestamps
 
-#### Data Association
 
-* Cost matrix combines:
+## 🚀 Quick Start
 
-  * Predicted–observed Euclidean distance
-  * Shape descriptor distance
-* Hungarian algorithm solves optimal assignment
-* Gating thresholds prevent unrealistic matches
-
----
-
-### 1.4 Track Management and Re-Identification
-
-* Tracks classified as **static** or **dynamic** based on speed
-* Dynamic tracks tolerate fewer missed frames
-* Lost tracks are buffered and can be re-identified using spatial proximity
-* Only tracks with sufficient hit count are considered valid
-
----
-
-### 1.5 Velocity Estimation
-
-Velocity is obtained directly from the Kalman filter:
-
-* Instantaneous velocity from `[vx, vy, vz]`
-* Speed computed as Euclidean norm
-* Temporal smoothing is inherent to Kalman filtering
-
----
-
-### 1.6 Visualization
-
-Provided visualizations include:
-
-1. 3D point cloud playback with bounding boxes and IDs
-2. Top-down (XY) trajectory plot
-3. Speed-vs-time plot
-
-Tracking results are exported to `tracking_results.json`.
-
----
-
-## 2. Implementation Challenges and Solutions
-
-### Noise and Floor Interference
-
-**Solution:**
-Ground plane removal + statistical filtering + geometry validation.
-
-### ID Switching During Occlusion
-
-**Solution:**
-Track buffering, re-identification using shape similarity, adaptive skip thresholds.
-
-### Velocity Jitter
-
-**Solution:**
-Timestamp-aware Kalman filter with tuned noise parameters.
-
-### Sparse Point Clouds
-
-**Solution:**
-Shape history averaging and conservative association gating.
-
----
-
-## 3. Evaluation
-
-### 3.1 Evaluation Without Ground Truth
-
-The dataset does **not** provide ground-truth IDs or velocities.
-Therefore, evaluation relies on **self-consistency**, **motion priors**, and **temporal smoothness**, which are standard in real-world tracking scenarios.
-
-The evaluation answers:
-
-* Does the tracker maintain a stable identity?
-* Is the human detected consistently?
-* Are estimated velocities smooth and physically plausible?
-* Is the trajectory temporally continuous?
-
-All metrics are computed automatically using `metrics.py`.
-
----
-
-### 3.2 ID Consistency Rate (Proxy)
-
-Since IDs are not explicitly stored, identity stability is evaluated using **spatial continuity**.
-
-A frame is considered ID-consistent if the detected position remains within a reasonable distance of the previous frame.
-
-ID Consistency Rate =
-number of spatially consistent frames ÷ total frames
-
-Values close to 1 indicate minimal identity switches.
-
----
-
-### 3.3 Track Completeness
-
-Track completeness measures detection coverage:
-
-Track Completeness =
-frames with at least one detection ÷ total frames
-
-This reflects robustness to noise and temporary occlusion.
-
----
-
-### 3.4 Velocity Estimation Quality
-
-#### Velocity Smoothness (Jerk)
-
-Human motion is expected to be smooth.
-We compute the mean absolute jerk:
-
-Jerk = average of |Δspeed ÷ Δtime|
-
-Lower values indicate smoother and more stable velocity estimation.
-
-#### Velocity Plausibility
-
-Estimated speeds are evaluated against human motion priors:
-
-Valid range: `0 ≤ speed ≤ 3.0 m/s`
-
-Velocity Plausibility =
-frames with valid speed ÷ total frames
-
----
-
-### 3.5 Visualization-Based Validation
-
-Tracking quality is visually confirmed using:
-
-* Continuous trajectories without jumps
-* Smooth speed profiles
-* Stable spatial paths
-
-These qualitative checks complement numerical metrics.
-
----
-
-### 3.6 Evaluation Results
-
-Running:
+### 1. Create Virtual Environment
 
 ```bash
-python3 metrics.py
+make venv
+source .venv/bin/activate
 ```
 
-Produces:
 
+
+### 2. Install Dependencies
+
+```bash
+make install
 ```
-📊 Tracking Evaluation Metrics (No GT, No IDs)
----------------------------------------------
-Track Completeness        : 1.000
-ID Consistency (Proxy)    : 0.965
-Velocity Smoothness       : 89.103 m/s²
-Velocity Plausibility     : 0.911
----------------------------------------------
-```
-
-**Interpretation:**
-
-* The human is detected in all frames
-* Identity remains stable throughout the sequence
-* Velocity estimates are smooth and physically plausible
 
 ---
 
-## 4. Limitations and Future Work
+## 🧠 Run Human Tracking
 
-### Current Limitations
+Run the tracker over a dataset (`mapHumanOnly` or `mapAll`):
 
-* Heuristic geometry filtering may fail in crowded scenes
-* Evaluation assumes a dominant single human
-* Hand-crafted shape descriptors are limited
+```bash
+python tracking.py
+```
 
-### Future Improvements
+You will be prompted to choose:
 
-* Learned point cloud features (PointNet / PointTransformer)
-* Mahalanobis distance gating
-* Confidence scores per track
-* Real-time C++ / PCL implementation
+* **[1] Human Only**
+* **[2] Entire Map**
+
+This produces:
+
+```
+tracking_results.json
+```
 
 ---
 
-## Conclusion
+## 🎥 Playback & Video Recording
 
-This project demonstrates a **robust, modular, and extensible 3D human tracking system** operating directly on point cloud data.
+Visualize tracking results and record an annotated video:
 
-By combining geometric reasoning, probabilistic tracking, and principled evaluation without ground truth, the system fulfills all task requirements and provides a strong foundation for future research and deployment.
+```bash
+python tracking-playback.py
+```
 
-🚀
+Output:
+
+```
+tracking_playback.mp4
+```
+
+Features:
+
+* Per-track bounding boxes
+* ID + speed labels
+* Deterministic color per ID
+* Stable video resolution
+
+---
+
+## 📈 Visualization
+
+Plot trajectories and speed over time:
+
+```bash
+python tracking-visualization.py
+```
+
+Outputs:
+
+* Top-down (X–Y) trajectories
+* Speed vs time plots
+
+---
+
+## 📊 Evaluation (No Ground Truth)
+
+Compute heuristic tracking quality metrics:
+
+```bash
+python tracking-evaluate.py
+```
+
+Metrics include:
+
+* Track completeness
+* ID consistency proxy
+* Velocity smoothness
+* Velocity plausibility
+
+---
+
+## 📐 Reference Statistics Extraction
+
+Extract empirical human size and speed statistics from clean data:
+
+```bash
+python reference_extractor.py
+```
+
+Outputs:
+
+* Console report (height, width, speed)
+* `ground_truth_path.png`
+
+---
+
+## 🧹 Cleanup
+
+Remove Python cache files:
+
+```bash
+make clean
+```
+
+Remove virtual environment:
+
+```bash
+make clean-venv
+```
+
+Full cleanup:
+
+```bash
+make clean-all
+```
+
+---
+
+## 🧪 Output Format (`tracking_results.json`)
+
+```json
+{
+  "frame_id": 42,
+  "timestamp_ms": 1400,
+  "detections": [
+    {
+      "id": 1,
+      "position": [1.23, 0.45, 1.67],
+      "velocity": [0.12, 0.01, 0.0],
+      "speed": 0.12,
+      "status": "MOVING",
+      "confidence": 0.91
+    }
+  ]
+}
+```
+
+---
+
+## 📝 Notes
+
+* Designed for robustness over noisy point clouds
+* Works without ground truth or appearance features
+* Optimized for human-scale motion and geometry
+* Safe failure handling for corrupted or empty frames
+
