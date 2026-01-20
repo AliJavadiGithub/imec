@@ -165,7 +165,7 @@ make install
 Run the tracker on a dataset:
 
 ```bash
-python tracking.py
+python tracking-reid.py
 ```
 
 Choose:
@@ -254,20 +254,6 @@ python tracking-evaluate.py
 
 ---
 
-## 📐 Reference Statistics Extraction
-
-Extract empirical human size and speed statistics from clean data:
-
-```bash
-python reference_extractor.py
-```
-
-Outputs:
-
-* Console report (height, width, speed)
-* `ground_truth_path.png`
-
----
 
 ## 🧪 Output Format (`tracking_results.json`)
 
