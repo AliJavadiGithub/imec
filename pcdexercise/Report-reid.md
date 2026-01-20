@@ -78,7 +78,12 @@ Each track uses an **Interacting Multiple Model (IMM)** filter with two models:
 State vector:
 
 
-x = [ pₓ, pᵧ, p_z, vₓ, vᵧ, v_z ]ᵀ
+\[
+\mathbf{x} =
+\begin{bmatrix}
+p_x \\ p_y \\ p_z \\ v_x \\ v_y \\ v_z
+\end{bmatrix}
+\]
 
 
 The filter is **dt-aware** using timestamps extracted from filenames (`*_1234ms.pcd`), and the process noise (Q) is built from a continuous white-noise acceleration model.
