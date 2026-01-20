@@ -85,7 +85,7 @@ make install
 Run the tracker over a dataset (`mapHumanOnly` or `mapAll`):
 
 ```bash
-python tracking.py
+make track
 ```
 
 You will be prompted to choose:
@@ -106,7 +106,7 @@ tracking_results.json
 Visualize tracking results and record an annotated video:
 
 ```bash
-python tracking-playback.py
+make playback
 ```
 
 Output:
@@ -129,7 +129,7 @@ Features:
 Plot trajectories and speed over time:
 
 ```bash
-python tracking-visualization.py
+make visualize
 ```
 
 Outputs:
@@ -144,7 +144,7 @@ Outputs:
 Compute heuristic tracking quality metrics:
 
 ```bash
-python tracking-evaluate.py
+make evaluate
 ```
 
 Metrics include:
@@ -158,10 +158,10 @@ Metrics include:
 
 ## 📐 Reference Statistics Extraction
 
-Extract empirical human size and speed statistics from clean data:
+Extract empirical human size and speed statistics from mapHumanOnly:
 
 ```bash
-python reference_extractor.py
+make reference
 ```
 
 Outputs:
