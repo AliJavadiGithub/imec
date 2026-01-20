@@ -4,13 +4,17 @@ tracking.py
 Robust multi-object human tracking in 3D point clouds.
 
 Off-the-shelf "SOTA-ish" improvements (no training, sensor-agnostic):
-- Detection: voxel downsample + (optional) plane removal + DBSCAN + geometry validation (+ PCA verticality)
-- Tracking: IMM with proper CV + RW models, dt-aware, physically consistent Q
+- Detection: voxel downsample + (optional) plane removal + DBSCAN + geometry validation
+           + PCA verticality (uprightness) + stronger aspect/points thresholds
+- Tracking: IMM with CV + RW models, dt-aware, physically consistent Q
 - Association: two-stage (Mahalanobis Hungarian + appearance refinement)
 - Re-ID: CLIP multi-view projection embeddings + Open3D FPFH descriptor
-- Track-level embedding gallery (EMA + short-term buffer)
-- Velocity: measurement EMA + One Euro smoothing + plausibility clamp
+- Track-level embedding smoothing (EMA)
 - Output: tracking_results.json (same schema)
+
+NEW (this update):
+- Temporal motion confirmation gate to suppress static clutter:
+  only EMIT tracks if they show displacement over last ~2 seconds OR meaningful speed.
 
 Notes:
 - True SOTA 3D ReID typically requires training. This is a very strong no-training baseline.
@@ -22,6 +26,8 @@ import json
 import numpy as np
 import open3d as o3d
 from typing import List, Dict, Optional, Tuple
+from collections import deque
+
 from scipy.optimize import linear_sum_assignment
 from filterpy.kalman import KalmanFilter, IMMEstimator
 
@@ -67,14 +73,10 @@ def clamp_norm(v: np.ndarray, max_norm: float) -> np.ndarray:
 
 
 # =========================
-# One Euro Filter
+# One Euro Filter (velocity smoothing)
 # =========================
 
 class OneEuroFilter:
-    """
-    Adaptive low-pass filter for jittery signals.
-    Good for velocity smoothing when sensor characteristics are unknown.
-    """
     def __init__(self, min_cutoff=1.0, beta=0.02, d_cutoff=1.0):
         self.min_cutoff = float(min_cutoff)
         self.beta = float(beta)
@@ -331,7 +333,7 @@ class HumanDetector:
         self.voxel_size = 0.07
         self.remove_ground = True
 
-        # DBSCAN (tightened per your request)
+        # DBSCAN (tightened)
         self.dbscan_eps = 0.50
         self.dbscan_min_points = 12
 
@@ -341,14 +343,14 @@ class HumanDetector:
         self.max_width = 1.2
         self.min_density = 2.0
 
-    # ---- NEW: PCA verticality ----
+    # ---- PCA verticality (uprightness) ----
     def verticality_score(self, pts: np.ndarray) -> float:
         X = pts - pts.mean(axis=0, keepdims=True)
         C = np.cov(X.T)
         w, V = np.linalg.eigh(C)  # ascending
         v = V[:, np.argmax(w)]
         v = v / (np.linalg.norm(v) + 1e-12)
-        return float(abs(v[2]))
+        return float(abs(v[2]))  # 1.0 = perfectly vertical
 
     def extract_shape_descriptor(self, cluster: o3d.geometry.PointCloud) -> np.ndarray:
         pts = np.asarray(cluster.points)
@@ -371,10 +373,12 @@ class HumanDetector:
             dtype=np.float32
         )
 
-    # ---- MODIFIED: stronger human geometry w/ verticality ----
+    # ---- Stronger human geometry (optional tightened) ----
     def is_valid_human_geometry(self, cluster: o3d.geometry.PointCloud) -> bool:
         pts = np.asarray(cluster.points)
-        if pts.shape[0] < 40:
+
+        # tightened minimum points (to suppress tiny vertical clutter)
+        if pts.shape[0] < 60:
             return False
 
         bbox = cluster.get_axis_aligned_bounding_box()
@@ -383,6 +387,7 @@ class HumanDetector:
         width = max(ext[0], ext[1])
         density = float(pts.shape[0] / np.prod(ext))
 
+        # base constraints
         if not (self.min_height <= height <= self.max_height):
             return False
         if width > self.max_width:
@@ -390,12 +395,13 @@ class HumanDetector:
         if density < self.min_density:
             return False
 
+        # tightened aspect and verticality
         aspect_hw = height / (width + 1e-6)
-        if aspect_hw < 1.2:
+        if aspect_hw < 1.4:
             return False
 
         vert = self.verticality_score(pts)
-        if vert < 0.75:
+        if vert < 0.85:
             return False
 
         return True
@@ -559,6 +565,15 @@ class Track:
         self._vel_smoothed = np.zeros(3, dtype=np.float32)
         self._speed_smoothed = 0.0
 
+        # ---- NEW: short position history for temporal motion confirmation ----
+        self.pos_hist = deque(maxlen=60)  # ~2 seconds at 30Hz
+        self.pos_hist.append(self.last_seen_pos.copy())
+
+    def displacement_recent(self) -> float:
+        if len(self.pos_hist) < 2:
+            return 0.0
+        return float(np.linalg.norm(self.pos_hist[-1] - self.pos_hist[0]))
+
     def predict(self, dt: float):
         for f in self.kf.filters:
             f.F = np.eye(6, dtype=np.float32)
@@ -613,6 +628,7 @@ class Track:
                 self.fpfh_ema = l2_normalize((1 - alpha) * self.fpfh_ema + alpha * fpfh)
 
         self.last_seen_pos = z.copy()
+        self.pos_hist.append(self.last_seen_pos.copy())  # <-- NEW
         self.skipped_frames = 0
         self.hits += 1
 
@@ -674,22 +690,31 @@ class HumanTrackerMOT:
         )
         self.fpfh = FPFHDescriptor(enabled=True, voxel=0.10)
 
+        # Track management
         self.min_hits = 3
         self.max_skip_dynamic = 25
         self.max_skip_static = 60
 
+        # Motion gating
         self.maha_gate = 12.0
 
+        # Appearance weights
         self.shape_weight = 0.10
         self.clip_weight = 0.55
         self.fpfh_weight = 0.25
         self.euclid_weight = 0.10
 
+        # ReID thresholds
         self.reid_spatial_max = 2.2
         self.reid_clip_max = 0.35
         self.reid_fpfh_max = 0.55
 
+        # Physical sanity
         self.max_human_speed = 3.5
+
+        # ---- NEW: temporal motion confirmation gate ----
+        self.confirm_disp = 0.6      # meters over ~2 seconds
+        self.confirm_speed = 0.15    # m/s
 
     def _compute_det_features(self, det: Dict):
         if self.clip.ok:
@@ -905,20 +930,31 @@ class HumanTrackerMOT:
                 )
                 self.next_id += 1
 
+        # =========================
+        # Emit results (UNCHANGED schema) + NEW motion-confirmation gate
+        # =========================
         results = []
         for t in self.tracks:
-            if t.skipped_frames == 0 and t.hits >= self.min_hits:
-                pos = t.position()
-                vel = t.velocity()
-                sp = t.speed()
-                results.append({
-                    "id": t.id,
-                    "position": [round(float(p), 3) for p in pos],
-                    "velocity": [round(float(v), 3) for v in vel],
-                    "speed": round(float(sp), 3),
-                    "status": "STATIC" if t.is_static else "MOVING",
-                    "confidence": round(float(t.confidence()), 3)
-                })
+            if t.skipped_frames != 0 or t.hits < self.min_hits:
+                continue
+
+            # Motion-confirmation gate to suppress static clutter
+            disp = t.displacement_recent()
+            sp = t.speed()
+
+            if disp < self.confirm_disp and sp < self.confirm_speed:
+                continue
+
+            pos = t.position()
+            vel = t.velocity()
+            results.append({
+                "id": t.id,
+                "position": [round(float(p), 3) for p in pos],
+                "velocity": [round(float(v), 3) for v in vel],
+                "speed": round(float(sp), 3),
+                "status": "STATIC" if t.is_static else "MOVING",
+                "confidence": round(float(t.confidence()), 3)
+            })
 
         self.history.append({
             "frame_id": frame_id,
