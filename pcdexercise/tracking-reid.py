@@ -12,9 +12,11 @@ Off-the-shelf "SOTA-ish" improvements (no training, sensor-agnostic):
 - Track-level embedding smoothing (EMA)
 - Output: tracking_results.json (same schema)
 
-NEW (this update):
-- Temporal motion confirmation gate to suppress static clutter:
-  only EMIT tracks if they show displacement over last ~2 seconds OR meaningful speed.
+NEW in this version:
+- Temporal motion confirmation gate (stricter):
+    confirm_disp = 0.9 m over ~2s OR confirm_speed = 0.20 m/s
+- Moving evidence counter:
+    Track must accumulate moving_count >= 8 before being emitted.
 
 Notes:
 - True SOTA 3D ReID typically requires training. This is a very strong no-training baseline.
@@ -333,7 +335,7 @@ class HumanDetector:
         self.voxel_size = 0.07
         self.remove_ground = True
 
-        # DBSCAN (tightened)
+        # DBSCAN
         self.dbscan_eps = 0.50
         self.dbscan_min_points = 12
 
@@ -343,14 +345,13 @@ class HumanDetector:
         self.max_width = 1.2
         self.min_density = 2.0
 
-    # ---- PCA verticality (uprightness) ----
     def verticality_score(self, pts: np.ndarray) -> float:
         X = pts - pts.mean(axis=0, keepdims=True)
         C = np.cov(X.T)
-        w, V = np.linalg.eigh(C)  # ascending
+        w, V = np.linalg.eigh(C)
         v = V[:, np.argmax(w)]
         v = v / (np.linalg.norm(v) + 1e-12)
-        return float(abs(v[2]))  # 1.0 = perfectly vertical
+        return float(abs(v[2]))
 
     def extract_shape_descriptor(self, cluster: o3d.geometry.PointCloud) -> np.ndarray:
         pts = np.asarray(cluster.points)
@@ -373,11 +374,10 @@ class HumanDetector:
             dtype=np.float32
         )
 
-    # ---- Stronger human geometry (optional tightened) ----
     def is_valid_human_geometry(self, cluster: o3d.geometry.PointCloud) -> bool:
         pts = np.asarray(cluster.points)
 
-        # tightened minimum points (to suppress tiny vertical clutter)
+        # tightened minimum points
         if pts.shape[0] < 60:
             return False
 
@@ -387,7 +387,6 @@ class HumanDetector:
         width = max(ext[0], ext[1])
         density = float(pts.shape[0] / np.prod(ext))
 
-        # base constraints
         if not (self.min_height <= height <= self.max_height):
             return False
         if width > self.max_width:
@@ -395,7 +394,6 @@ class HumanDetector:
         if density < self.min_density:
             return False
 
-        # tightened aspect and verticality
         aspect_hw = height / (width + 1e-6)
         if aspect_hw < 1.4:
             return False
@@ -565,9 +563,12 @@ class Track:
         self._vel_smoothed = np.zeros(3, dtype=np.float32)
         self._speed_smoothed = 0.0
 
-        # ---- NEW: short position history for temporal motion confirmation ----
+        # short position history (motion confirmation)
         self.pos_hist = deque(maxlen=60)  # ~2 seconds at 30Hz
         self.pos_hist.append(self.last_seen_pos.copy())
+
+        # ---- NEW: moving evidence counter ----
+        self.moving_count = 0
 
     def displacement_recent(self) -> float:
         if len(self.pos_hist) < 2:
@@ -602,7 +603,14 @@ class Track:
         self.kf.predict()
         self.age += 1
 
-    def update(self, centroid: np.ndarray, shape: np.ndarray, emb: Optional[np.ndarray], fpfh: Optional[np.ndarray], dt: float):
+    def update(
+        self,
+        centroid: np.ndarray,
+        shape: np.ndarray,
+        emb: Optional[np.ndarray],
+        fpfh: Optional[np.ndarray],
+        dt: float
+    ):
         centroid = centroid.astype(np.float32)
         shape = shape.astype(np.float32)
 
@@ -628,7 +636,8 @@ class Track:
                 self.fpfh_ema = l2_normalize((1 - alpha) * self.fpfh_ema + alpha * fpfh)
 
         self.last_seen_pos = z.copy()
-        self.pos_hist.append(self.last_seen_pos.copy())  # <-- NEW
+        self.pos_hist.append(self.last_seen_pos.copy())
+
         self.skipped_frames = 0
         self.hits += 1
 
@@ -642,6 +651,12 @@ class Track:
 
         self._vel_smoothed = v_s.astype(np.float32)
         self._speed_smoothed = float(sp_s)
+
+        # ---- NEW: moving evidence update ----
+        if sp_s > 0.18:
+            self.moving_count += 1
+        else:
+            self.moving_count = max(0, self.moving_count - 1)
 
     def avg_shape(self) -> np.ndarray:
         return np.mean(np.stack(self.shape_history[-15:], axis=0), axis=0)
@@ -712,9 +727,9 @@ class HumanTrackerMOT:
         # Physical sanity
         self.max_human_speed = 3.5
 
-        # ---- NEW: temporal motion confirmation gate ----
-        self.confirm_disp = 0.6      # meters over ~2 seconds
-        self.confirm_speed = 0.15    # m/s
+        # ---- UPDATED: stricter temporal motion confirmation gate ----
+        self.confirm_disp = 0.9      # meters over ~2 seconds
+        self.confirm_speed = 0.20    # m/s
 
     def _compute_det_features(self, det: Dict):
         if self.clip.ok:
@@ -931,14 +946,18 @@ class HumanTrackerMOT:
                 self.next_id += 1
 
         # =========================
-        # Emit results (UNCHANGED schema) + NEW motion-confirmation gate
+        # Emit results (UNCHANGED schema) + stricter motion-confirmation + moving_count gate
         # =========================
         results = []
         for t in self.tracks:
             if t.skipped_frames != 0 or t.hits < self.min_hits:
                 continue
 
-            # Motion-confirmation gate to suppress static clutter
+            # require moving evidence for a few frames
+            if t.moving_count < 8:
+                continue
+
+            # motion-confirmation gate to suppress static clutter
             disp = t.displacement_recent()
             sp = t.speed()
 
