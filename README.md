@@ -1,67 +1,60 @@
-````markdown
 # 3D Point Cloud Human Tracking
 
-> **Computer Vision | 3D Point Cloud Processing | Multi-Object Tracking | Probabilistic State Estimation | Python | Open3D**
+**Computer Vision | 3D Point Cloud Processing | Multi-Object Tracking | Probabilistic State Estimation | Python | Open3D**
 
-A research-oriented implementation for robust multi-object human detection, tracking, visualization, and evaluation from sequential 3D point cloud data.
+This repository contains a research-oriented implementation for robust human detection, multi-object tracking, visualization, and evaluation from sequential 3D point cloud data.
 
-The project processes LiDAR/depth-map point cloud sequences, detects human objects using geometric reasoning, estimates trajectories with probabilistic motion models, and provides visualization and quantitative evaluation tools. The implementation emphasizes robustness to noisy observations while remaining suitable for real-time processing.
+The project processes LiDAR/depth-map point cloud sequences, detects human candidates using clustering and geometric reasoning, estimates trajectories with probabilistic motion models, and provides tools for playback, visualization, and quantitative analysis.
 
----
+## Research Relevance
 
-# Research Topics
+This project is related to several active research areas in computer vision and artificial intelligence:
 
-This project is related to several active research areas in Computer Vision and Artificial Intelligence:
+* 3D computer vision
+* Point cloud processing
+* Human detection
+* Multi-object tracking
+* Probabilistic state estimation
+* Kalman filtering
+* Data association
+* Real-time perception
+* Visualization and performance evaluation
 
-- 3D Computer Vision
-- Point Cloud Processing
-- Human Detection
-- Multi-Object Tracking (MOT)
-- Probabilistic State Estimation
-- Kalman Filtering
-- Data Association
-- Real-Time Perception
-- Visualization and Performance Evaluation
+## Main Features
 
----
+### 3D Human Detection
 
-# Main Features
+* DBSCAN clustering for point cloud segmentation
+* Geometry-based human candidate validation
+* Noise filtering and outlier rejection
 
-## 3D Human Detection
+### Multi-Object Tracking
 
-- DBSCAN clustering for point cloud segmentation
-- Geometry-based human candidate validation
-- Noise filtering and outlier rejection
+* Interacting Multiple Model (IMM) Kalman filter
+* Constant Velocity and Random Walk motion models
+* Hungarian assignment with statistical gating
+* Track initialization and termination
+* Static/dynamic track classification
+* Lightweight re-identification
 
-## Multi-Object Tracking
+### Visualization
 
-- Interacting Multiple Model (IMM) Kalman Filter
-- Constant Velocity and Random Walk motion models
-- Hungarian assignment with statistical gating
-- Track initialization and termination
-- Static/Dynamic track classification
-- Lightweight re-identification
+* Interactive Open3D playback
+* 3D bounding boxes
+* Object IDs and speed labels
+* Automatic MP4 video generation
+* Top-down trajectory visualization
 
-## Visualization
+### Evaluation
 
-- Interactive Open3D playback
-- 3D bounding boxes
-- Object IDs and speed labels
-- Automatic MP4 video generation
-- Top-down trajectory visualization
+* Heuristic tracking quality metrics
+* Velocity consistency analysis
+* Track completeness estimation
+* Reference statistic extraction from clean datasets
 
-## Evaluation
+## Project Structure
 
-- Heuristic tracking quality metrics
-- Velocity consistency analysis
-- Track completeness estimation
-- Reference statistic extraction from clean datasets
-
----
-
-# Project Structure
-
-```text
+```
 .
 ├── Makefile
 ├── tracking.py
@@ -75,139 +68,116 @@ This project is related to several active research areas in Computer Vision and 
 └── tracking_playback.mp4
 ```
 
----
+## Requirements
 
-# Requirements
+* Python 3.8+
+* Open3D
+* OpenCV
 
-- Python 3.8+
-- Open3D
-- OpenCV
+Python packages:
 
-Python packages
+* open3d
+* numpy
+* scipy
+* scikit-learn
+* matplotlib
+* filterpy
+* opencv-python
 
-- open3d
-- numpy
-- scipy
-- scikit-learn
-- matplotlib
-- filterpy
-- opencv-python
+## Quick Start
 
-Install everything using
+Create a virtual environment:
 
-```bash
-make install
 ```
-
----
-
-# Quick Start
-
-Create a virtual environment
-
-```bash
 make venv
 source .venv/bin/activate
 ```
 
-Install dependencies
+Install dependencies:
 
-```bash
+```
 make install
 ```
 
-Run tracking
+Run tracking:
 
-```bash
+```
 make track
 ```
 
-Choose one of the datasets:
+You will be prompted to choose one of the datasets:
 
 ```
 [1] Human Only
 [2] Entire Map
 ```
 
-The tracker generates
+The tracker generates:
 
 ```
 tracking_results.json
 ```
 
----
+## Visualization
 
-# Visualization
+Run interactive playback and video recording:
 
-Interactive playback
-
-```bash
+```
 make playback
 ```
 
-Output
+Output:
 
 ```
 tracking_playback.mp4
 ```
 
-Visualization includes
+Visualization includes:
 
-- 3D bounding boxes
-- Track IDs
-- Estimated speed
-- Consistent object colors
+* 3D bounding boxes
+* Track IDs
+* Estimated speed
+* Consistent object colors
 
-Trajectory analysis
+Plot trajectories and speed profiles:
 
-```bash
+```
 make visualize
 ```
 
-Outputs
+## Evaluation
 
-- Top-down trajectories
-- Speed profiles
+Run quantitative evaluation:
 
----
-
-# Quantitative Evaluation
-
-Run
-
-```bash
+```
 make evaluate
 ```
 
-Computed metrics include
+Computed metrics include:
 
-- Track completeness
-- ID consistency proxy
-- Velocity smoothness
-- Velocity plausibility
+* Track completeness
+* ID consistency proxy
+* Velocity smoothness
+* Velocity plausibility
 
----
+## Reference Statistics
 
-# Reference Statistics
+Extract empirical human statistics:
 
-Extract empirical human statistics
-
-```bash
+```
 make reference
 ```
 
-Outputs
+Outputs include:
 
-- Estimated human height
-- Estimated human width
-- Walking speed statistics
-- Ground-truth reference path
+* Estimated human height
+* Estimated human width
+* Walking speed statistics
+* Ground-truth reference path
 
----
+## Output Format
 
-# Output Format
-
-```json
+```
 {
   "frame_id": 42,
   "timestamp_ms": 1400,
@@ -224,35 +194,28 @@ Outputs
 }
 ```
 
----
+## Technical Highlights
 
-# Technical Highlights
+* Robust human detection in noisy point clouds
+* Probabilistic multi-object tracking
+* Motion estimation using IMM Kalman filtering
+* Hungarian data association with gating
+* Real-time 3D visualization
+* Modular Python implementation
+* No appearance features or ground-truth labels required
+* Safe handling of corrupted and incomplete frames
 
-- Robust human detection in noisy point clouds
-- Probabilistic multi-object tracking
-- Motion estimation using IMM Kalman Filtering
-- Hungarian data association with gating
-- Real-time 3D visualization
-- Modular Python implementation
-- No appearance features or ground-truth labels required
-- Safe handling of corrupted and incomplete frames
+## Technologies
 
----
+* Python
+* Open3D
+* NumPy
+* SciPy
+* Scikit-learn
+* FilterPy
+* OpenCV
+* Matplotlib
 
-# Technologies
+## Disclaimer
 
-- Python
-- Open3D
-- NumPy
-- SciPy
-- Scikit-learn
-- FilterPy
-- OpenCV
-- Matplotlib
-
----
-
-# Disclaimer
-
-This repository was developed as a technical assessment demonstrating practical implementation skills in 3D computer vision, point cloud processing, probabilistic tracking, and scientific software engineering.
-````
+This repository was developed as a technical assessment project demonstrating practical implementation skills in 3D computer vision, point cloud processing, probabilistic tracking, and scientific software engineering.
