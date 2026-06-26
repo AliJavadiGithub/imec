@@ -20,109 +20,110 @@ This project is related to several active research areas in computer vision and 
 * Real-time perception
 * Visualization and performance evaluation
 
-## Main Features
 
-### 3D Human Detection
+---
 
-* DBSCAN clustering for point cloud segmentation
-* Geometry-based human candidate validation
-* Noise filtering and outlier rejection
+## ✨ Features
 
-### Multi-Object Tracking
+- **3D Human Detection**
+  - DBSCAN clustering on point clouds
+  - Geometry-based human validation
+- **Multi-Object Tracking (MOT)**
+  - IMM Kalman Filter (Constant Velocity + Random Walk)
+  - Hungarian assignment with gating
+  - Track lifecycle management (static vs dynamic)
+  - Lightweight re-identification
+- **Visualization & Playback**
+  - Open3D real-time playback
+  - Per-ID bounding boxes, markers, and labels
+  - Automatic MP4 video recording
+- **Analysis & Evaluation**
+  - Trajectory and speed plots
+  - Heuristic tracking quality metrics (no ground truth required)
+  - Reference statistic extraction from clean datasets
 
-* Interacting Multiple Model (IMM) Kalman filter
-* Constant Velocity and Random Walk motion models
-* Hungarian assignment with statistical gating
-* Track initialization and termination
-* Static/dynamic track classification
-* Lightweight re-identification
+---
 
-### Visualization
-
-* Interactive Open3D playback
-* 3D bounding boxes
-* Object IDs and speed labels
-* Automatic MP4 video generation
-* Top-down trajectory visualization
-
-### Evaluation
-
-* Heuristic tracking quality metrics
-* Velocity consistency analysis
-* Track completeness estimation
-* Reference statistic extraction from clean datasets
-
-## Project Structure
+## 📁 Project Structure
 
 ```
+
 .
 ├── Makefile
-├── tracking.py
-├── tracking-playback.py
-├── tracking-visualization.py
-├── tracking-evaluate.py
-├── reference_extractor.py
-├── mapHumanOnly/
-├── mapAll/
-├── tracking_results.json
-└── tracking_playback.mp4
-```
-
-## Requirements
-
-* Python 3.8+
-* Open3D
-* OpenCV
-
-Python packages:
-
-* open3d
-* numpy
-* scipy
-* scikit-learn
-* matplotlib
-* filterpy
-* opencv-python
-
-## Quick Start
-
-Create a virtual environment:
+├── tracking.py                    # Core human detection + multi-object tracking
+├── tracking-playback.py           # 3D playback + video recording
+├── tracking-visualization.py      # Trajectory & speed plots
+├── tracking-evaluate.py           # Quantitative tracking metrics (proxy)
+├── reference_extractor.py         # Human size/speed statistics extraction
+├── mapHumanOnly/                  # Point clouds with only humans
+├── mapAll/                        # Full environment point clouds
+├── tracking_results.json          # Generated tracking output
+└── tracking_playback.mp4          # Recorded playback video
 
 ```
+
+## ⚙️ Requirements
+
+- Python **3.8+**
+- System dependencies for **Open3D** and **OpenCV**
+
+Python packages (installed via Makefile):
+
+- `open3d`
+- `numpy`
+- `scipy`
+- `scikit-learn`
+- `matplotlib`
+- `filterpy`
+- `opencv-python`
+
+
+
+## 🚀 Quick Start
+
+### 1. Create Virtual Environment
+
+```bash
 make venv
 source .venv/bin/activate
 ```
 
-Install dependencies:
 
-```
+
+### 2. Install Dependencies
+
+```bash
 make install
 ```
 
-Run tracking:
+---
 
-```
+## 🧠 Run Human Tracking
+
+Run the tracker over a dataset (`mapHumanOnly` or `mapAll`):
+
+```bash
 make track
 ```
 
-You will be prompted to choose one of the datasets:
+You will be prompted to choose:
 
-```
-[1] Human Only
-[2] Entire Map
-```
+* **[1] Human Only**
+* **[2] Entire Map**
 
-The tracker generates:
+This produces:
 
 ```
 tracking_results.json
 ```
 
-## Visualization
+---
 
-Run interactive playback and video recording:
+## 🎥 Playback & Video Recording
 
-```
+Visualize tracking results and record an annotated video:
+
+```bash
 make playback
 ```
 
@@ -132,52 +133,87 @@ Output:
 tracking_playback.mp4
 ```
 
-Visualization includes:
+Features:
 
-* 3D bounding boxes
-* Track IDs
-* Estimated speed
-* Consistent object colors
+* Per-track bounding boxes
+* ID + speed labels
+* Deterministic color per ID
+* Stable video resolution
 
-Plot trajectories and speed profiles:
+---
 
-```
+## 📈 Visualization
+
+Plot trajectories and speed over time:
+
+```bash
 make visualize
 ```
 
-## Evaluation
+Outputs:
 
-Run quantitative evaluation:
+* Top-down (X–Y) trajectories
+* Speed vs time plots
 
-```
+---
+
+## 📊 Evaluation (No Ground Truth)
+
+Compute heuristic tracking quality metrics:
+
+```bash
 make evaluate
 ```
 
-Computed metrics include:
+Metrics include:
 
 * Track completeness
 * ID consistency proxy
 * Velocity smoothness
 * Velocity plausibility
 
-## Reference Statistics
+---
 
-Extract empirical human statistics:
+## 📐 Reference Statistics Extraction
 
-```
+Extract empirical human size and speed statistics from mapHumanOnly:
+
+```bash
 make reference
 ```
 
-Outputs include:
+Outputs:
 
-* Estimated human height
-* Estimated human width
-* Walking speed statistics
-* Ground-truth reference path
+* Console report (height, width, speed)
+* `ground_truth_path.png`
 
-## Output Format
+---
 
+## 🧹 Cleanup
+
+Remove Python cache files:
+
+```bash
+make clean
 ```
+
+Remove virtual environment:
+
+```bash
+make clean-venv
+```
+
+Full cleanup:
+
+```bash
+make clean-all
+```
+
+---
+
+## 🧪 Output Format (`tracking_results.json`)
+
+```json
 {
   "frame_id": 42,
   "timestamp_ms": 1400,
@@ -194,28 +230,11 @@ Outputs include:
 }
 ```
 
-## Technical Highlights
+---
 
-* Robust human detection in noisy point clouds
-* Probabilistic multi-object tracking
-* Motion estimation using IMM Kalman filtering
-* Hungarian data association with gating
-* Real-time 3D visualization
-* Modular Python implementation
-* No appearance features or ground-truth labels required
-* Safe handling of corrupted and incomplete frames
+## 📝 Notes
 
-## Technologies
-
-* Python
-* Open3D
-* NumPy
-* SciPy
-* Scikit-learn
-* FilterPy
-* OpenCV
-* Matplotlib
-
-## Disclaimer
-
-This repository was developed as a technical assessment project demonstrating practical implementation skills in 3D computer vision, point cloud processing, probabilistic tracking, and scientific software engineering.
+* Designed for robustness over noisy point clouds
+* Works without ground truth or appearance features
+* Optimized for human-scale motion and geometry
+* Safe failure handling for corrupted or empty frames
